@@ -4,4 +4,8 @@ python-dotenv
 openai
 python-multipart
 psycopg2
-
+pdfplumber
+PyPDF2
+pandas
+python-docx
+openpyxl
