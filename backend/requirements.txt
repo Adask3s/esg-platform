@@ -3,3 +3,8 @@ uvicorn
 python-dotenv
 openai
 python-multipart
+pdfplumber
+PyPDF2
+pandas
+python-docx
+openpyxl
