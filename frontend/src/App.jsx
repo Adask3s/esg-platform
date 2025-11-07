@@ -1,12 +1,14 @@
-import { useState } from 'react'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState } from "react";
+import viteLogo from "/vite.svg";
+import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL; 
+const API_URL = import.meta.env.VITE_API_URL;
 
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [message, setMessage] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isCompleted, setIsCompleted] = useState(false);
 
   async function uploadFile() {
     if (!selectedFile) {
@@ -18,18 +20,45 @@ function App() {
     formdata.append("file", selectedFile);
 
     try {
-      const response = await fetch(`${API_URL}/upload`, {
+      setIsLoading(true);
+      setIsCompleted(false);
+      const response = await fetch(`${API_URL}/process`, {
         method: "POST",
         body: formdata,
       });
 
       if (!response.ok) throw new Error("Błąd wysyłania pliku");
-
       const result = await response.json();
-      setMessage(`Udało się: ${result.filename}`);
+
+      setMessage(`Zadanie #${result.task_id} rozpoczęte...`);
+      checkStatus(result.task_id);
     } catch (err) {
       console.error(err);
-      setMessage(" Błąd wysyłania pliku");
+      setMessage("Błąd wysyłania pliku");
+      setIsLoading(false);
+    }
+  }
+
+  async function checkStatus(taskId) {
+    try {
+      const resp = await fetch(`${API_URL}/status/${taskId}`);
+      const data = await resp.json();
+
+      if (data.status === "in_progress") {
+        setMessage(`Status zadania ${taskId}: ${data.status}`);
+        setTimeout(() => checkStatus(taskId), 2000);
+      } else if (data.status.startsWith("error")) {
+        setMessage(`Błąd przetwarzania: ${data.status}`);
+        setIsLoading(false);
+      } else {
+        setMessage(`Status zadania ${taskId}: ${data.status}`);
+        setIsLoading(false);
+        setIsCompleted(true);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage("Błąd sprawdzania statusu");
+      setIsLoading(false);
     }
   }
 
@@ -49,14 +78,30 @@ function App() {
       <div>
         <h1>Platforma ETG</h1>
         <div className="uploadContainer">
-          <label htmlFor="plik" className="wybierz">Wybierz plik</label><br/>
-          <input id="plik" type="file" className="miejsce" onChange={handleFileChange} />
-          
+          <label htmlFor="plik" className="wybierz">
+            Wybierz plik
+          </label>
+          <br />
+          <input
+            id="plik"
+            type="file"
+            className="miejsce"
+            onChange={handleFileChange}
+          />
+
           <p className="podglad">
-            {selectedFile ? `Wybrano: ${selectedFile.name}` : "Nie wybrano pliku"}
+            {selectedFile
+              ? `Wybrano: ${selectedFile.name}`
+              : "Nie wybrano pliku"}
           </p>
 
           <button onClick={uploadFile}>Wyślij do procesowania</button>
+          {isLoading && <div className="loader"></div>}
+          {isCompleted && (
+            <div className="success-toast">
+              Plik został poprawnie przetworzony! ✅
+            </div>
+          )}
           <p>{message}</p>
         </div>
       </div>
