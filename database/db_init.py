@@ -22,6 +22,13 @@ def init_db():
         );
     """)
 
+    # --- użytkownik testowy (żeby nie brakowało foreign key) ---
+    cur.execute("""
+        INSERT INTO users (username, email)
+        VALUES ('test_user', 'test@example.com')
+        ON CONFLICT (username) DO NOTHING;
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
