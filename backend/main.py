@@ -4,8 +4,9 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from database.report_repo import save_report
 
 # Próbujemy zaimportować parsery - jeśli jesteśmy w pakiecie, użyj względnych importów
 try:
@@ -104,3 +105,57 @@ def openai_status():
 async def upload_file(file: UploadFile = File(...)):
     contents = await file.read()
     return {"filename": file.filename}
+
+# ============ LOGIKA STATUSU ZADAŃ =============
+task_status = {}  # dict: id -> "in_progress" / "completed" / "error"
+task_counter = 0  # tylko do tworzenia unikalnych ID
+
+def run_parsing(file_path: Path, task_id: int):
+    """Działa w tle, wykonuje parse_upload."""
+    global task_status
+    try:
+        dispatcher = ParserDispatcher()
+        result = dispatcher.parse(file_path)
+        project_root = Path(__file__).resolve().parents[1]
+        out_root = project_root / "output_test_parser"
+        write_result(result, out_root)
+        # zapis do bazy
+        save_report(
+            user_id=1,                                     # tymczasowo „1”, potem dynamicznie
+            input_text=str(file_path.name),                # nazwa lub ścieżka pliku
+            response_text="Plik przetworzony pomyślnie",   # można potem dodać wynik OpenAI
+            report_type="parse_result"
+        )
+        task_status[task_id] = "completed"
+    except Exception as e:
+        task_status[task_id] = f"error: {e}"
+    finally:
+        try:
+            shutil.rmtree(file_path.parent, ignore_errors=True)
+        except Exception:
+            pass
+
+
+@app.post("/process")
+async def process_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Startuje parsowanie w tle i zwraca task_id."""
+    global task_counter
+    task_counter += 1
+    task_id = task_counter
+    task_status[task_id] = "in_progress"
+
+    tmp_dir = tempfile.mkdtemp(prefix=f"task_{task_id}_")
+    tmp_path = Path(tmp_dir) / file.filename
+    tmp_path.write_bytes(await file.read())
+
+    background_tasks.add_task(run_parsing, tmp_path, task_id)
+    return {"task_id": task_id, "status": "in_progress"}
+
+
+@app.get("/status/{task_id}")
+def get_status(task_id: int):
+    """Zwraca status bieżącego zadania."""
+    status = task_status.get(task_id)
+    if not status:
+        return {"task_id": task_id, "status": "not_found"}
+    return {"task_id": task_id, "status": status}
