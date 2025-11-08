@@ -13,14 +13,15 @@ def init_db():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            input_text TEXT,
-            response_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+                CREATE TABLE IF NOT EXISTS reports(
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    input_text TEXT,
+                    response_text TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    report_type VARCHAR(50)
+                    );
+                """)
 
     # --- użytkownik testowy (żeby nie brakowało foreign key) ---
     cur.execute("""
