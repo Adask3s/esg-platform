@@ -5,6 +5,7 @@ import tempfile
 import shutil
 from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
 
@@ -55,33 +56,116 @@ client = None
 def ping():
     return {"message": "pong"}
 
+# Limity multi-upload
+MAX_FILES = 10
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
 @app.post("/parse")
-async def parse_upload(file: UploadFile = File(...)):
-    """Upload a file, parse it server-side, and write results into output_test_parser/.
-    Returns a manifest with output paths so a dev can inspect artifacts locally.
+async def parse_upload(
+    files: List[UploadFile] | None = File(None),
+    file: UploadFile | None = File(None),
+):
+    """Upload one or many files, parse server-side, and write results into output_test_parser/.
+    - Accepts either multiple `files` or single `file` for backward/simple usage.
+    - Enforces: max 10 files, max 50MB each.
     """
-    # Save to a temporary file first
-    tmp_dir = tempfile.mkdtemp(prefix="upload_")
-    tmp_path = Path(tmp_dir) / file.filename
-    try:
-        data = await file.read()
-        tmp_path.write_bytes(data)
-        
-        dispatcher = ParserDispatcher()
-        result = dispatcher.parse(tmp_path)
-        
-        project_root = Path(__file__).resolve().parents[1]
-        out_root = project_root / "output_test_parser"
-        manifest = write_result(result, out_root)
-        return {"status": "ok", "manifest": manifest}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        # cleanup temp files
+    # Zbierz wejście w listę
+    incoming: list[UploadFile] = []
+    if files:
+        incoming.extend(files)
+    if file:
+        incoming.append(file)
+
+    if not incoming:
+        raise HTTPException(status_code=400, detail="No file(s) provided. Use 'files' (multiple) or 'file' (single).")
+
+    if len(incoming) > MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Too many files. Max allowed: {MAX_FILES}")
+
+    dispatcher = ParserDispatcher()
+    project_root = Path(__file__).resolve().parents[1]
+    out_root = project_root / "output_test_parser"
+
+    # Jeśli tylko jeden plik — zachowaj dotychczasowy format odpowiedzi
+    if len(incoming) == 1:
+        f = incoming[0]
+        tmp_dir = tempfile.mkdtemp(prefix="upload_")
+        tmp_path = Path(tmp_dir) / f.filename
         try:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
+            data = await f.read()
+            if len(data) > MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail=f"File '{f.filename}' exceeds 50MB limit")
+            tmp_path.write_bytes(data)
+
+            result = dispatcher.parse(tmp_path)
+            manifest = write_result(result, out_root)
+
+            # Zapis do DB (user_id tymczasowo 1; nazwa pliku w input_text; stały response_text)
+            try:
+                save_report(
+                    user_id=1,
+                    input_text=str(f.filename),
+                    response_text="Plik przetworzony pomyślnie",
+                    report_type="parse_result",
+                )
+            except Exception:
+                # Nie zrywaj odpowiedzi API, jeśli DB chwilowo niedostępna
+                pass
+
+            return {"status": "ok", "manifest": manifest}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+    # Wiele plików — agreguj wyniki per plik
+    results = []
+    for f in incoming:
+        tmp_dir = tempfile.mkdtemp(prefix="upload_")
+        tmp_path = Path(tmp_dir) / f.filename
+        item = {"filename": f.filename}
+        try:
+            data = await f.read()
+            if len(data) > MAX_FILE_SIZE:
+                item["status"] = "error"
+                item["error"] = "File exceeds 50MB limit"
+                results.append(item)
+                continue
+
+            tmp_path.write_bytes(data)
+            result = dispatcher.parse(tmp_path)
+            manifest = write_result(result, out_root)
+
+            # DB
+            try:
+                report_id = save_report(
+                    user_id=1,
+                    input_text=str(f.filename),
+                    response_text="Plik przetworzony pomyślnie",
+                    report_type="parse_result",
+                )
+                item["report_id"] = report_id
+            except Exception:
+                pass
+
+            item["status"] = "ok"
+            item["manifest"] = manifest
+        except Exception as e:
+            item["status"] = "error"
+            item["error"] = str(e)
+        finally:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            results.append(item)
+
+    return {"status": "ok", "count": len(results), "results": results}
 
 @app.get("/openai-status")
 def openai_status():
