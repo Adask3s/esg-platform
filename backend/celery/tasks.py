@@ -36,7 +36,7 @@ def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: i
     if not path.exists():
         raise FileNotFoundError(f"Temp file not found: {tmp_file_path}")
 
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     out_root = project_root / "output_test_parser"
 
     dispatcher = ParserDispatcher()
@@ -70,3 +70,4 @@ def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: i
             shutil.rmtree(path.parent, ignore_errors=True)
         except Exception:
             pass
+
