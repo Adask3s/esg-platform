@@ -8,6 +8,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
+from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk
+
 # Celery imports (support both package and script-run modes)
 try:
     from backend.celery.celery_app import celery_app
@@ -204,13 +206,20 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/process")
 async def process_file(file: UploadFile = File(...)):
-    """Zapisuje plik tymczasowo i wysyla zadanie do Celery. Zwraca celery task_id."""
-    tmp_dir = tempfile.mkdtemp(prefix="task_")
-    tmp_path = Path(tmp_dir) / file.filename
-    tmp_path.write_bytes(await file.read())
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="task_", dir=str(tmp_root))
+    safe_name = sanitize_filename(file.filename or "file")
+    tmp_path = Path(tmp_dir) / safe_name
 
-    # Wysyla zadanie do workera
-    async_result = parse_and_store.delay(str(tmp_path), file.filename, 1)
+    written = await save_upload_streamed(file, tmp_path)
+    if written > MAX_FILE_SIZE:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=f"Plik '{safe_name}' przekracza limit 50MB")
+
+    validate_file_on_disk(tmp_path, safe_name)
+
+    async_result = parse_and_store.delay(str(tmp_path), safe_name, 1)
     return {"task_id": async_result.id, "status": "queued"}
 
 
