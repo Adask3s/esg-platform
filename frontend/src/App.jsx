@@ -14,6 +14,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
 
+  const [fileStatuses, setFileStatuses] = useState({});// status plikow
   // Gasowski: pomocnicze, by przeglądarka nie otwierała plików
   function preventDefaults(e) {
     e.preventDefault();
@@ -78,11 +79,22 @@ function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || "Błąd wysyłania plików");
 
-      if (data?.results) {
-        setMessage(`Przetworzono ${data.count} plików`);
-      } else {
-        setMessage("OK – 1 plik przetworzony");
-      }
+      const taskIds=[];
+      for (const f of selectedFiles){
+        const res=await processFile(f);
+        setStatus(f.name, "QUEUED");
+        const taskId=res.task_id;
+        taskIds.push(res.taskId);
+
+        const interval=setInterval(async()=>{
+          const st= await checkStatus(taskId);
+          setStatus(f.name, st.state);
+          if (st.state === "SUCCESS" || st.state === "FAILURE") {
+            clearInterval(interval);
+          }
+        },2000);}
+      setMessage(`zadanka w celery ${taskIds.join(", ")}`)
+
       setIsCompleted(true);
     } catch (err) {
       console.error(err);
@@ -92,6 +104,35 @@ function App() {
       setIsLoading(false);
     }
   }
+
+  async function processFile(file) {
+    const formdata= new FormData();
+    formdata.append("file",file);
+    
+    const response=await fetch(`${API_URL}/process`,{
+      method:"POST",
+      body:formdata,
+    });
+
+    const data= await response.json();
+    if(!response.ok) throw new Error(data?.detail || "blad process");
+    return data;
+  }
+
+  async function checkStatus(taskId){
+    const response= await fetch(`${API_URL}/status/${taskId}`);
+    const data= response.json();
+    return data;
+  }
+
+  //helper do statusu (zmienia stanu)
+  function setStatus(filename, status) {
+  setFileStatuses(prev => ({
+    ...prev,
+    [filename]: status
+  }));
+}
+
 
   return (
     <>
@@ -132,7 +173,12 @@ function App() {
               ? `Wybrano: ${selectedFiles.map((f) => f.name).join(", ")}`
               : "Nie wybrano plików"}
           </p>
-
+          {selectedFiles.map((file) => (
+            <div key={file.name} style={{ marginTop: "4px" }}>
+            <strong>{file.name}</strong> —{" "}
+            {fileStatuses[file.name] || "oczekuje…"}
+            </div>
+          ))}
           <button onClick={uploadFiles}>Wyślij do procesowania</button>
           {isLoading && <div className="loader"></div>}
           {isCompleted && (
