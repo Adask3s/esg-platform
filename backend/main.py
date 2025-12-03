@@ -286,182 +286,185 @@ def get_status(task_id: str):
 
 # ESG Analysis Endpoints
 
+# ---------------------------------------------------------
+# REAL ENDPOINTS (NO MOCKS)
+# ---------------------------------------------------------
+
 @app.post("/analyze-social")
-async def analyze_social(report_path: str, use_mock: bool = False):
+async def analyze_social(report_path: str):
     """
-    Analizuje dane społeczne (Social - S) z już sparsowanego raportu ESG.
-    Wysyła dane do OpenAI z promptem specyficznym dla aspektów społecznych.
-
-    Args:
-        report_path: Ścieżka do katalogu z sparsowanym raportem (np. output_test_parser/raport__20251203_120000)
-        use_mock: Jeśli True, zwraca mock-ową odpowiedź bez wywoływania OpenAI (do testów)
-
-    Returns:
-        Analiza LLM danych społecznych + zapis do bazy
+    PRODUKCYJNY ENDPOINT SOCIAL (S).
+    Wymaga klucza OpenAI API. Analizuje plik text.txt ze wskazanej ścieżki.
     """
-    # Inicjalizacja klienta OpenAI (pomiń jeśli mock)
-    openai_client = None
-    if not use_mock:
-        openai_client = get_openai_client()
-        if openai_client is None:
-            raise HTTPException(
-                status_code=500,
-                detail="OpenAI API key not configured. Use ?use_mock=true for testing without API key."
-            )
-
-    # Walidacja ścieżki
-    report_dir = Path(report_path)
-    if not report_dir.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Report directory not found: {report_path}"
-        )
-
-    # Wczytanie sparsowanego tekstu
-    text_file = report_dir / "text.txt"
-    if not text_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Text file not found in report: {text_file}"
-        )
-
-    try:
-        full_text = text_file.read_text(encoding="utf-8")
-    except Exception as e:
+    # 1. Konfiguracja klienta OpenAI
+    openai_client = get_openai_client()
+    if openai_client is None:
         raise HTTPException(
             status_code=500,
-            detail=f"Error reading text file: {str(e)}"
+            detail="OpenAI API key is missing. Configure .env file."
         )
 
-    # Prompt specyficzny dla analizy Social (S)
-    social_prompt = f"""Jesteś ekspertem w analizie ESG, specjalizującym się w aspektach społecznych (Social).
+    # 2. Walidacja ścieżki
+    report_dir = Path(report_path)
+    if not report_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
 
-Przeanalizuj poniższy raport i wyodrębnij TYLKO informacje dotyczące obszaru społecznego (S):
+    text_file = report_dir / "text.txt"
+    if not text_file.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
 
-OBSZARY DO ANALIZY:
-1. Bezpieczeństwo i higiena pracy (BHP)
-2. Szkolenia i rozwój pracowników
-3. Różnorodność i inkluzywność (gender diversity)
-4. Programy wolontariatu i zaangażowanie społeczne
-5. Wypadki przy pracy
-6. Relacje ze społecznościami lokalnymi
-7. Warunki pracy
-8. Prawa pracownicze
+    full_text = text_file.read_text(encoding="utf-8")
 
-RAPORT ESG:
-{full_text}
+    # 3. Prompt Systemowy (Social)
+    social_prompt = f"""Przeanalizuj poniższy tekst raportu budowlanego/ESG i wyciągnij dane dla kategorii SOCIAL (S).
 
-ZADANIE:
-Wyodrębnij i przedstaw w strukturalny sposób wszystkie dane dotyczące aspektów społecznych.
-Jeśli raport zawiera konkretne liczby/wskaźniki, uwzględnij je w analizie.
+DANE WEJŚCIOWE:
+{full_text[:50000]}  # Ograniczenie znaków dla bezpieczeństwa tokenów
 
-Format odpowiedzi (JSON):
+INSTRUKCJA:
+Wygeneruj raport w formacie JSON zawierający kluczowe wskaźniki społeczne.
+Skup się na liczbach (liczba wypadków, liczba przeszkolonych osób, % kobiet).
+Jeśli brak danych, wpisz null.
+
+OCZEKIWANY FORMAT JSON:
 {{
   "kategoria": "Social",
-  "kluczowe_wskazniki": [
-    {{"nazwa": "...", "wartosc": "...", "jednostka": "..."}}
-  ],
-  "dzialania": ["..."],
-  "wypadki_bhp": {{"liczba": ..., "opis": "..."}},
-  "szkolenia": {{"liczba_pracownikow": ..., "procent_kobiet": ..., "tematyka": "..."}},
-  "wolontariat": {{"liczba_programow": ..., "opis": "..."}},
-  "podsumowanie": "..."
+  "bhp": {{
+    "wypadki_ciezkie": 0,
+    "wypadki_lekkie": 0,
+    "wskaznik_wypadkowosci": "opis lub null"
+  }},
+  "pracownicy": {{
+    "szkolenia_godziny": 0,
+    "liczba_przeszkolonych": 0
+  }},
+  "roznorodnosc": {{
+    "kobiety_procent": 0,
+    "zarzad_kobiety_procent": 0
+  }},
+  "spolecznosc": {{
+    "wolontariat_akcje": 0,
+    "skargi_od_mieszkancow": 0
+  }},
+  "podsumowanie": "Krótki opis sytuacji socjalnej."
 }}
 """
 
     try:
-        # MOCK MODE - zwróć przykładową analizę bez wywoływania OpenAI
-        if use_mock:
-            llm_analysis = """{
-  "kategoria": "Social",
-  "kluczowe_wskazniki": [
-    {"nazwa": "Przeszkoleni pracownicy", "wartosc": "400", "jednostka": "osoby"},
-    {"nazwa": "Udział kobiet w szkoleniach", "wartosc": "35", "jednostka": "%"},
-    {"nazwa": "Programy wolontariatu", "wartosc": "3", "jednostka": "programy"}
-  ],
-  "dzialania": [
-    "Szkolenia z BHP i zrównoważonego budownictwa",
-    "Programy wolontariatu pracowniczego",
-    "Działania na rzecz różnorodności"
-  ],
-  "wypadki_bhp": {
-    "liczba": 1,
-    "opis": "1 lekkie zdarzenie wypadkowe bez hospitalizacji"
-  },
-  "szkolenia": {
-    "liczba_pracownikow": 400,
-    "procent_kobiet": 35,
-    "tematyka": "BHP i zrównoważone budownictwo"
-  },
-  "wolontariat": {
-    "liczba_programow": 3,
-    "opis": "Realizacja 3 programów wolontariatu pracowniczego"
-  },
-  "podsumowanie": "Spółka aktywnie rozwija kompetencje pracowników w obszarze zrównoważonego rozwoju. Szczególny nacisk położono na bezpieczeństwo pracy (1 lekkie zdarzenie) oraz rozwój kompetencji (400 przeszkolonych pracowników). Pozytywnie ocenia się programy wolontariatu pracowniczego oraz działania na rzecz różnorodności."
-}"""
-
-            # Zapis do bazy danych
-            try:
-                report_id = save_report(
-                    user_id=1,
-                    input_text=f"[Social Analysis - MOCK] {report_path}",
-                    response_text=llm_analysis,
-                    report_type="social_analysis_mock"
-                )
-            except Exception as db_err:
-                report_id = None
-                print(f"⚠️  Warning: Could not save to database: {db_err}")
-
-            return {
-                "status": "success",
-                "esg_category": "Social",
-                "report_path": str(report_path),
-                "report_id": report_id,
-                "analysis": llm_analysis,
-                "tokens_used": 0,
-                "model": "mock-model (testing mode)",
-                "is_mock": True
-            }
-
-        # REAL MODE - wywołanie OpenAI API
-        # Wywołanie OpenAI API
+        # 4. Wywołanie OpenAI
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # Możesz zmienić na gpt-4 lub gpt-3.5-turbo
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Jesteś ekspertem w analizie ESG ze specjalizacją w aspektach społecznych."},
+                {"role": "system", "content": "Jesteś analitykiem ESG. Zwracaj tylko czysty JSON."},
                 {"role": "user", "content": social_prompt}
             ],
-            temperature=0.3,  # Niska temperatura dla bardziej faktycznej analizy
-            max_tokens=2000
+            response_format={"type": "json_object"}  # Wymuszenie formatu JSON
         )
 
-        llm_analysis = response.choices[0].message.content
+        analysis_result = response.choices[0].message.content
 
-        # Zapis do bazy danych
-        try:
-            report_id = save_report(
-                user_id=1,
-                input_text=f"[Social Analysis] {report_path}",
-                response_text=llm_analysis,
-                report_type="social_analysis"
-            )
-        except Exception as db_err:
-            # Nie blokuj odpowiedzi jeśli DB nie działa
-            report_id = None
-            print(f"⚠️  Warning: Could not save to database: {db_err}")
+        # 5. Zapis do bazy
+        save_report(
+            user_id=1,
+            input_text=f"[Social REAL] {report_path}",
+            response_text=analysis_result,
+            report_type="social_analysis"
+        )
 
         return {
             "status": "success",
-            "esg_category": "Social",
-            "report_path": str(report_path),
-            "report_id": report_id,
-            "analysis": llm_analysis,
-            "tokens_used": response.usage.total_tokens,
-            "model": response.model
+            "data": analysis_result
         }
 
     except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+
+@app.post("/analyze-environmental")
+async def analyze_environmental(report_path: str):
+    """
+    PRODUKCYJNY ENDPOINT ENVIRONMENTAL (E).
+    Wymaga klucza OpenAI API. Analizuje twarde dane liczbowe (CO2, woda, energia).
+    """
+    # 1. Konfiguracja
+    openai_client = get_openai_client()
+    if openai_client is None:
         raise HTTPException(
             status_code=500,
-            detail=f"OpenAI API error: {str(e)}"
+            detail="OpenAI API key is missing. Configure .env file."
         )
+
+    # 2. Walidacja plików
+    report_dir = Path(report_path)
+    if not report_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
+
+    text_file = report_dir / "text.txt"
+    if not text_file.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
+
+    full_text = text_file.read_text(encoding="utf-8")
+
+    # 3. Prompt Systemowy (Environmental)
+    env_prompt = f"""Przeanalizuj poniższy tekst dokumentacji i wyciągnij twarde dane ŚRODOWISKOWE (E).
+Zwróć szczególną uwagę na jednostki (kWh, tCO2e, Mg, m3).
+
+DANE WEJŚCIOWE:
+{full_text[:50000]}
+
+OCZEKIWANY FORMAT JSON:
+{{
+  "kategoria": "Environmental",
+  "emisje_co2": {{
+    "scope_1_wartosc": null,
+    "scope_2_wartosc": null,
+    "scope_3_wartosc": null,
+    "jednostka": "tCO2e"
+  }},
+  "energia": {{
+    "zuzycie_calkowite": null,
+    "jednostka": "kWh",
+    "oze_procent": null
+  }},
+  "woda": {{
+    "zuzycie": null,
+    "jednostka": "m3"
+  }},
+  "odpady": {{
+    "masa_calkowita": null,
+    "jednostka": "Mg",
+    "recykling_procent": null
+  }},
+  "certyfikaty": ["lista znalezionych certyfikatów np. BREEAM"],
+  "podsumowanie": "Krótka ocena wpływu na środowisko."
+}}
+"""
+
+    try:
+        # 4. Wywołanie OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Jesteś inżynierem środowiska. Zwracaj tylko czysty JSON."},
+                {"role": "user", "content": env_prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+
+        analysis_result = response.choices[0].message.content
+
+        # 5. Zapis do bazy
+        save_report(
+            user_id=1,
+            input_text=f"[Environmental REAL] {report_path}",
+            response_text=analysis_result,
+            report_type="environmental_analysis"
+        )
+
+        return {
+            "status": "success",
+            "data": analysis_result
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
