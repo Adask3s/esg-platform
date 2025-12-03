@@ -468,3 +468,101 @@ OCZEKIWANY FORMAT JSON:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+@app.post("/analyze-governance")
+async def analyze_governance(report_path: str):
+    """
+    PRODUKCYJNY ENDPOINT GOVERNANCE (G).
+    Wymaga klucza OpenAI API. Analizuje dokumenty pod kątem ładu korporacyjnego.
+    """
+    # 1. Konfiguracja klienta OpenAI
+    openai_client = get_openai_client()
+    if openai_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key is missing. Configure .env file."
+        )
+
+    # 2. Walidacja ścieżki
+    report_dir = Path(report_path)
+    if not report_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
+
+    text_file = report_dir / "text.txt"
+    if not text_file.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
+
+    full_text = text_file.read_text(encoding="utf-8")
+
+    # 3. Prompt systemowy Governance
+    gov_prompt = f"""Przeanalizuj poniższy tekst i wyciągnij informacje dotyczące kategorii GOVERNANCE (G).
+Skup się na strukturze zarządczej, etyce, ryzykach, politykach wewnętrznych oraz zgodności z przepisami.
+
+DANE WEJŚCIOWE:
+{full_text[:50000]}
+
+INSTRUKCJA:
+Zwróć dane w formacie JSON. Jeśli informacji brakuje, wstaw null.
+Koncentruj się na danych, a nie na interpretacjach.
+
+OCZEKIWANY FORMAT JSON:
+{{
+  "kategoria": "Governance",
+  "struktura_zarzadzania": {{
+    "liczba_czlonkow_zarzadu": null,
+    "komitety": ["np. komitet audytu, komitet ds. ryzyka"],
+    "niezalezni_czlonkowie_procent": null
+  }},
+  "polityki": {{
+    "polityka_antykorupcyjna": null,
+    "kodeks_etyki": null,
+    "polityka_zakupowa": null,
+    "polityka_whistleblowing": null
+  }},
+  "ryzyka_i_kontrola": {{
+    "zidentyfikowane_ryzyka": ["lista ryzyk"],
+    "system_kontroli_wewnetrznej": null,
+    "procedury_nadzoru_nad_podwykonawcami": null
+  }},
+  "zgodnosc": {{
+    "naruszenia_prawne": null,
+    "kary_finansowe": null,
+    "certyfikaty_zarzadcze": ["np. ISO 37001"]
+  }},
+  "transparentnosc": {{
+    "raportowanie_esg": null,
+    "ujawnienia_finansowe": null,
+    "polityka_komunikacji": null
+  }},
+  "podsumowanie": "Krótka ocena ładu korporacyjnego."
+}}
+"""
+
+    try:
+        # 4. Wywołanie OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Jesteś ekspertem ds. ładu korporacyjnego. Zwracaj tylko czysty JSON."},
+                {"role": "user", "content": gov_prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+
+        analysis_result = response.choices[0].message.content
+
+        # 5. Zapis do bazy
+        save_report(
+            user_id=1,
+            input_text=f"[Governance REAL] {report_path}",
+            response_text=analysis_result,
+            report_type="governance_analysis"
+        )
+
+        return {
+            "status": "success",
+            "data": analysis_result
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
