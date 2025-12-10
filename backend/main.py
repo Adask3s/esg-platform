@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
@@ -18,6 +18,18 @@ except ImportError:
     from backend.celery.celery_app import celery_app  # type: ignore
     from backend.celery.tasks import parse_and_store  # type: ignore
 from celery.result import AsyncResult
+
+# Ingestion (scraping + chunking)
+from .ingestion import (
+    IngestUrlRequest,
+    IngestResponse,
+    ChunkConfig,
+    KeywordFilterConfig,
+    fetch_url_text_blocks,
+    SourceType,
+)
+from .ingestion.chunker import make_blocks, chunk_text
+from .ingestion.filter import keyword_filter_blocks
 
 # Próbujemy zaimportować parsery - jeśli jesteśmy w pakiecie, użyj względnych importów
 try:
@@ -181,6 +193,123 @@ async def parse_upload(
             results.append(item)
 
     return {"status": "ok", "count": len(results), "results": results}
+
+# Ingestion endpoints: scraping + keyword filtering + chunking
+
+@app.post("/ingest/chunk/url")
+async def ingest_chunk_url(body: IngestUrlRequest = Body(...)):
+    """
+    Pobiera stronę WWW (HTML), czyści do tekstu, następnie filtruje wg słów kluczowych
+    i dzieli na fragmenty (chunking) z overlapem. Zwraca listę chunków.
+    """
+    try:
+        blocks = fetch_url_text_blocks(body.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Fetch error: {e}")
+
+    kcfg, ccfg = body.to_configs()
+    # jeśli brak keywordów -> weź całe bloki
+    if body.keywords:
+        filtered_blocks, kept = keyword_filter_blocks(blocks, kcfg)
+    else:
+        filtered_blocks, kept = blocks, list(range(len(blocks)))
+
+    # Połącz i ponownie pocięte zgodnie z regułami chunkera
+    joined = "\n\n".join(filtered_blocks)
+    chunks_models = chunk_text(joined, ccfg)
+
+    resp = IngestResponse(
+        source_type=SourceType.url,
+        source=body.url,
+        total_blocks=len(blocks),
+        chunks=chunks_models,
+        notes=(
+            "Brak dopasowań dla słów kluczowych" if body.keywords and not filtered_blocks else None
+        ),
+    )
+    return resp
+
+
+@app.post("/ingest/chunk/file")
+async def ingest_chunk_file(
+    file: UploadFile = File(...),
+    # prosty, elastyczny input z formularza (opcjonalny)
+    keywords: str | None = Form(None, description="Słowa kluczowe rozdzielone przecinkami"),
+    case_sensitive: bool = Form(False),
+    match_all: bool = Form(False),
+    context_before: int = Form(0),
+    context_after: int = Form(0),
+    target_tokens: int = Form(750),
+    min_tokens: int = Form(400),
+    max_tokens: int = Form(1200),
+    overlap_tokens: int = Form(80),
+):
+    dispatcher = ParserDispatcher()
+
+    # Zapis tymczasowy pliku i parsowanie istniejącym modułem
+    tmp_dir = tempfile.mkdtemp(prefix="ingest_")
+    tmp_path = Path(tmp_dir) / (file.filename or "upload.bin")
+    try:
+        data = await file.read()
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds 50MB limit")
+        tmp_path.write_bytes(data)
+
+        parsed = dispatcher.parse(tmp_path)
+        text = parsed.text or ""
+        if not text and parsed.pages:
+            text = "\n\n".join(parsed.pages)
+        if not text:
+            raise HTTPException(status_code=400, detail="Brak tekstu do przetworzenia z pliku")
+
+        blocks = make_blocks(text)
+
+        kw_list = []
+        if keywords:
+            kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
+
+        kcfg = KeywordFilterConfig(
+            keywords=kw_list,
+            case_sensitive=case_sensitive,
+            match_all=match_all,
+            context_before=context_before,
+            context_after=context_after,
+        )
+        ccfg = ChunkConfig(
+            target_tokens=target_tokens,
+            min_tokens=min_tokens,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+        )
+
+        if kw_list:
+            filtered_blocks, kept = keyword_filter_blocks(blocks, kcfg)
+        else:
+            filtered_blocks, kept = blocks, list(range(len(blocks)))
+
+        joined = "\n\n".join(filtered_blocks)
+        chunks_models = chunk_text(joined, ccfg)
+
+        resp = IngestResponse(
+            source_type=SourceType.file,
+            source=str(file.filename),
+            total_blocks=len(blocks),
+            chunks=chunks_models,
+            notes=(
+                "Brak dopasowań dla słów kluczowych" if kw_list and not filtered_blocks else None
+            ),
+        )
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
 
 @app.get("/openai-status")
 def openai_status():
