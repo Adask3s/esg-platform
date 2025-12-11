@@ -37,7 +37,14 @@ function App() {
     setIsDragging(false);
     const dropped = Array.from(e.dataTransfer?.files || []);
     if (!dropped.length) return;
-    setSelectedFiles(dropped.slice(0, 10)); // Gasowski: limit 10 po stronie frontu
+    setSelectedFiles(prev => {
+      const byName = {};
+      const combined = [...prev, ...dropped];
+      for (const f of combined) {
+        if (!byName[f.name]) byName[f.name] = f;
+      }
+      return Object.values(byName).slice(0, 10);
+    });
   }
 
   // Gasowski: globalne wyłączenie domyślnego zachowania dla drag&drop (żeby przeglądarka nie otwierała plików)
@@ -57,7 +64,14 @@ function App() {
   // Gasowski: wybór plików przez input
   function handleFileChange(event) {
     const files = Array.from(event.target.files || []);
-    setSelectedFiles(files.slice(0, 10)); // Gasowski
+    setSelectedFiles(prev => {
+      const byName = {};
+      const combined = [...prev, ...files];
+      for (const f of combined) {
+        if (!byName[f.name]) byName[f.name] = f;
+      }
+      return Object.values(byName).slice(0, 10);
+    });
   }
 
   // Gasowski: upload wielu plików do /parse
