@@ -48,6 +48,16 @@ def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: i
         self.update_state(state="PROGRESS", meta={"step": "writing_output"})
         manifest = write_result(result, out_root)
 
+        # Wyciągnij output_dir z manifestu (potrzebne dla ESG analysis)
+        output_dir = None
+        if manifest and "output_directory" in manifest:
+            output_dir = manifest["output_directory"]
+        elif manifest and "files" in manifest and manifest["files"]:
+            # Fallback: weź katalog pierwszego pliku
+            first_file = manifest["files"][0].get("path", "")
+            if first_file:
+                output_dir = str(Path(first_file).parent)
+
         report_id = None
         try:
             self.update_state(state="PROGRESS", meta={"step": "db_save"})
@@ -63,6 +73,8 @@ def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: i
         meta: Dict[str, Any] = {"manifest": manifest}
         if report_id is not None:
             meta["report_id"] = report_id
+        if output_dir:
+            meta["output_dir"] = output_dir
 
         return meta
     finally:
