@@ -15,6 +15,8 @@ function App() {
   const [isCompleted, setIsCompleted] = useState(false);
 
   const [fileStatuses, setFileStatuses] = useState({});// status plikow
+  const [perFileTags, setPerFileTags] = useState({});
+  const [openTagDropdownFor, setOpenTagDropdownFor] = useState(null);
   // Gasowski: pomocnicze, by przeglądarka nie otwierała plików
   function preventDefaults(e) {
     e.preventDefault();
@@ -84,12 +86,19 @@ function App() {
         const res=await processFile(f);
         setStatus(f.name, "QUEUED");
         const taskId=res.task_id;
-        taskIds.push(res.taskId);
+        taskIds.push(taskId);
 
         const interval=setInterval(async()=>{
           const st= await checkStatus(taskId);
           setStatus(f.name, st.state);
-          if (st.state === "SUCCESS" || st.state === "FAILURE") {
+          if (st.state === "SUCCESS") {
+            clearInterval(interval);
+            const fileTag = perFileTags[f.name];
+            if (fileTag && st.result?.output_dir) {
+              await runESGAnalysis(st.result.output_dir, fileTag, f.name);
+            }
+          }
+          if (st.state === "FAILURE") {
             clearInterval(interval);
           }
         },2000);}
@@ -121,7 +130,7 @@ function App() {
 
   async function checkStatus(taskId){
     const response= await fetch(`${API_URL}/status/${taskId}`);
-    const data= response.json();
+    const data= await response.json();
     return data;
   }
 
@@ -132,6 +141,27 @@ function App() {
     [filename]: status
   }));
 }
+
+  async function runESGAnalysis(outputDir, tag, filename) {
+    try {
+      setStatus(filename, `ESG: ${tag.toUpperCase()}...`);
+      const endpoint = tag === "social" 
+        ? "/analyze-social"
+        : tag === "environmental"
+        ? "/analyze-environmental"
+        : "/analyze-governance";
+      const response = await fetch(`${API_URL}${endpoint}?report_path=${encodeURIComponent(outputDir)}`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || "Błąd analizy ESG");
+      setStatus(filename, `✅ ESG: ${tag.toUpperCase()} done`);
+      console.log(`ESG Analysis (${tag}) result:`, data);
+    } catch (err) {
+      console.error(`ESG Analysis error (${tag}):`, err);
+      setStatus(filename, `❌ ESG: ${tag.toUpperCase()} failed`);
+    }
+  }
 
 
   return (
@@ -162,10 +192,8 @@ function App() {
               className="miejsce"
               multiple // Gasowski
               onChange={handleFileChange}
+              style={{ display: "none" }}
             />
-            <label htmlFor="plik" className="wybierz">
-              Wybierz pliki
-            </label>
           </div>
 
           <p className="podglad">
@@ -174,9 +202,38 @@ function App() {
               : "Nie wybrano plików"}
           </p>
           {selectedFiles.map((file) => (
-            <div key={file.name} style={{ marginTop: "4px" }}>
-            <strong>{file.name}</strong> —{" "}
-            {fileStatuses[file.name] || "oczekuje…"}
+            <div key={file.name} style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "8px", position: "relative" }}>
+              <div style={{ flex: 1 }}>
+                <strong>{file.name}</strong> — {fileStatuses[file.name] || "oczekuje…"}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ minWidth: 140 }}>
+                  {perFileTags[file.name] ? (
+                    <span style={{ padding: "4px 8px", background: "#e8f5e9", borderRadius: 4 }}>
+                      {perFileTags[file.name].toUpperCase()}
+                    </span>
+                  ) : (
+                    <span style={{ padding: "4px 8px", background: "#f1f1f1", borderRadius: 4 }}>
+                      No tag
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setOpenTagDropdownFor(openTagDropdownFor === file.name ? null : file.name)}
+                  style={{ padding: "6px 8px", borderRadius: "50%", border: "none", background: "#2196F3", color: "white", cursor: "pointer" }}
+                  title="Wybierz tag dla tego pliku"
+                >
+                  +
+                </button>
+              </div>
+              {openTagDropdownFor === file.name && (
+                <div style={{ position: "absolute", right: 0, top: "32px", padding: 8, border: "1px solid #ccc", background: "white", borderRadius: 6, zIndex: 1000 }}>
+                  <button onClick={() => { setPerFileTags(prev => ({ ...prev, [file.name]: "social" })); setOpenTagDropdownFor(null); }} style={{ display: "block", width: "100%", padding: "8px", margin: "4px 0", cursor: "pointer", background: "#2196F3", color: "white", border: "none", borderRadius: "4px", fontSize: "14px" }}>Social (S)</button>
+                  <button onClick={() => { setPerFileTags(prev => ({ ...prev, [file.name]: "environmental" })); setOpenTagDropdownFor(null); }} style={{ display: "block", width: "100%", padding: "8px", margin: "4px 0", cursor: "pointer", background: "#2196F3", color: "white", border: "none", borderRadius: "4px", fontSize: "14px" }}>Environmental (E)</button>
+                  <button onClick={() => { setPerFileTags(prev => ({ ...prev, [file.name]: "governance" })); setOpenTagDropdownFor(null); }} style={{ display: "block", width: "100%", padding: "8px", margin: "4px 0", cursor: "pointer", background: "#2196F3", color: "white", border: "none", borderRadius: "4px", fontSize: "14px" }}>Governance (G)</button>
+                  <button onClick={() => { setPerFileTags(prev => { const copy = { ...prev }; delete copy[file.name]; return copy; }); setOpenTagDropdownFor(null); }} style={{ display: "block", width: "100%", padding: "8px", margin: "4px 0", cursor: "pointer", background: "#f44336", color: "white", border: "none", borderRadius: "4px", fontSize: "14px" }}>Usuń tag</button>
+                </div>
+              )}
             </div>
           ))}
           <button onClick={uploadFiles}>Wyślij do procesowania</button>
