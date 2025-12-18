@@ -5,10 +5,11 @@ import tempfile
 import shutil
 from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
-from typing import List
+from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk
+from pydantic import BaseModel
 
 # Celery imports (support both package and script-run modes)
 try:
@@ -695,3 +696,39 @@ OCZEKIWANY FORMAT JSON:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+# ======= ENDPOINT BAZY WIEDZY ========
+# Importujemy serwis (upewnij się, że ścieżka importu jest poprawna dla twojej struktury folderów)
+try:
+    from backend.services.knowledge_service import add_document_to_knowledge_base
+except ImportError:
+    from database.knowledge_service import add_document_to_knowledge_base
+
+# Model wejściowy - dopasowany do tabeli knowledge_documents
+class KnowledgeInput(BaseModel):
+    title: str
+    source: str         # np. nazwa pliku lub URL
+    full_text: str      # To trafi do kolumny 'raw_text'
+    tag: Optional[str] = "general" # Domyślny tag, jeśli user nie poda
+
+@app.post("/knowledge/add")
+async def add_knowledge(item: KnowledgeInput):
+    """
+    Endpoint do zasilania bazy wiedzy.
+    Przyjmuje dokument, zapisuje oryginał i tnie go na kawałki (chunks).
+    """
+    try:
+        result = add_document_to_knowledge_base(
+            title=item.title,
+            source=item.source,
+            full_text=item.full_text,
+            tag=item.tag
+        )
+        return {
+            "status": "success",
+            "message": "Dokument i chunki zostały zapisane w Supabase",
+            "data": result
+        }
+    except Exception as e:
+        print(f"Error adding knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
