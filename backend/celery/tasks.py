@@ -14,8 +14,10 @@ except ImportError:
 
 try:
     from database.report_repo import save_report
+    from database.knowledge_service import add_document_to_knowledge_base
 except Exception:
     from .database.report_repo import save_report  # type: ignore
+    from .database.knowledge_service import add_document_to_knowledge_base  # type: ignore
 
 
 @celery_app.task(bind=True, name="backend.parse_and_store")
@@ -82,4 +84,89 @@ def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: i
             shutil.rmtree(path.parent, ignore_errors=True)
         except Exception:
             pass
+
+
+@celery_app.task(bind=True, name="backend.parse_and_store_to_knowledge")
+def parse_and_store_to_knowledge(
+    self,
+    tmp_file_path: str,
+    original_filename: str,
+    tag: str = "general",
+    document_type: str = "general",
+    version: str = "1.0"
+) -> Dict[str, Any]:
+    """
+    Celery task: Parsuj plik i automatycznie zapisz do bazy wiedzy (Supabase).
+
+    FLOW:
+    1. Parsowanie pliku (PDF/DOCX/Excel) → ekstrakcja tekstu
+    2. Chunkowanie tekstu (moduł ingestion)
+    3. Zapis do Supabase:
+       - knowledge_documents (pełny dokument + metadata)
+       - knowledge_chunks (fragmenty tekstu, bez embeddingów)
+
+    Parameters:
+    - tmp_file_path: pełna ścieżka do pliku tymczasowego
+    - original_filename: oryginalna nazwa pliku
+    - tag: tag kategoryzujący (np. 'social', 'environmental', 'governance')
+    - document_type: typ dokumentu (domyślnie 'general')
+    - version: wersja dokumentu (domyślnie '1.0')
+
+    Returns:
+    - Dict z informacją o sukcesie, document_id, liczbie chunków
+    """
+    self.update_state(state="STARTED", meta={"step": "init", "filename": original_filename})
+
+    path = Path(tmp_file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Temp file not found: {tmp_file_path}")
+
+    dispatcher = ParserDispatcher()
+
+    try:
+        # === KROK 1: PARSOWANIE ===
+        self.update_state(state="PROGRESS", meta={"step": "parsing", "filename": original_filename})
+        result = dispatcher.parse(path)
+
+        # Wyciągnij tekst
+        raw_text = result.text or ""
+        if not raw_text and result.pages:
+            raw_text = "\n\n".join(result.pages)
+
+        if not raw_text.strip():
+            raise ValueError("Nie udało się wyodrębnić tekstu z pliku")
+
+        # === KROK 2: ZAPIS DO BAZY WIEDZY (z automatycznym chunkowaniem) ===
+        self.update_state(state="PROGRESS", meta={"step": "saving_to_knowledge_base", "filename": original_filename})
+
+        kb_result = add_document_to_knowledge_base(
+            title=original_filename,
+            source=f"upload:{original_filename}",
+            raw_text=raw_text,
+            tag=tag,
+            document_type=document_type,
+            version=version
+        )
+
+        # === KROK 3: RETURN ===
+        return {
+            "status": "success",
+            "filename": original_filename,
+            "document_id": kb_result["document_id"],
+            "chunks_created": kb_result["chunks_created"],
+            "tag": kb_result["tag_assigned"],
+            "message": "Dokument sparsowany i zapisany do bazy wiedzy (bez embeddingów)"
+        }
+
+    except Exception as e:
+        self.update_state(state="FAILURE", meta={"error": str(e)})
+        raise
+
+    finally:
+        # Usuń plik tymczasowy
+        try:
+            shutil.rmtree(path.parent, ignore_errors=True)
+        except Exception:
+            pass
+
 
