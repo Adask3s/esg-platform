@@ -54,16 +54,18 @@ def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: 
     generated_chunks = chunk_text(raw_text, config)
     print(f"Generated {len(generated_chunks)} chunks.")
 
-    # Zapis Chunków
+    # Zapis Chunków (ADAPTACJA DO ISTNIEJĄCEJ STRUKTURY)
     chunks_payload = []
 
     for chunk_obj in generated_chunks:
-        # Mapowanie na kolumny tabeli knowledge_chunks
+        # Mapowanie na kolumny tabeli knowledge_chunks (TWOJA STRUKTURA)
+        # Twoja tabela: id, document_id, chunk_text, tag, embedding, created_at
         chunks_payload.append({
-            "document_id": document_id,  # Klucz obcy
-            "chunk_text": chunk_obj.text,
-            "tag": tag,  # <--- Ważne: Przepisujemy tag z dokumentu do chunka
-            # "embedding": null         # To pole zostawiamy puste, baza wstawi null, bo nie mamy narazie wektorów
+            "document_id": document_id,  # uuid NOT NULL
+            "chunk_text": chunk_obj.text,  # text NULL
+            "tag": tag,  # varchar NULL
+            # embedding - NULL (generowane osobno przez endpoint /embeddings/*)
+            # created_at - NULL (baza wstawi automatycznie)
         })
 
     # Wykonujemy jeden duży insert (bulk insert) zamiast setki małych

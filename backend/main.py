@@ -15,11 +15,17 @@ from pydantic import BaseModel
 # Celery imports (support both package and script-run modes)
 try:
     from backend.celery.celery_app import celery_app
-    from backend.celery.tasks import parse_and_store
+    from backend.celery.tasks import parse_and_store, parse_and_store_to_knowledge
 except ImportError:
     from backend.celery.celery_app import celery_app  # type: ignore
-    from backend.celery.tasks import parse_and_store  # type: ignore
+    from backend.celery.tasks import parse_and_store, parse_and_store_to_knowledge  # type: ignore
 from celery.result import AsyncResult
+
+# Router embeddingów (ZADANIE 2)
+try:
+    from backend.embeddings import router as embeddings_router
+except ImportError:
+    from .embeddings import router as embeddings_router  # type: ignore
 
 # Ingestion (scraping + chunking)
 from .ingestion import (
@@ -51,6 +57,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+# Podłączenie routera embeddingów (ZADANIE 2 - uporządkowany kod)
+app.include_router(embeddings_router)
 
 # wczytuje dane z pliku .env
 load_dotenv()
@@ -800,3 +809,73 @@ async def upload_knowledge_files(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return {"results": results}
+
+
+
+@app.post("/knowledge/parse-and-store")
+async def parse_and_store_knowledge(
+    file: UploadFile = File(...),
+    tag: str = Form("general"),
+    document_type: str = Form("general"),
+    version: str = Form("1.0")
+):
+    """
+    INTEGRACJA PARSERÓW Z BAZĄ WIEDZY (ZADANIE 1).
+
+    Przyjmuje plik (PDF/DOCX/Excel), parsuje go, ekstrahuje tekst,
+    automatycznie chunkuje i zapisuje do Supabase (knowledge_documents + knowledge_chunks).
+
+    UWAGA: To zadanie asynchroniczne (Celery) - zwraca task_id.
+
+    Flow:
+    1. Upload pliku → tymczasowy katalog
+    2. Celery task: parse_and_store_to_knowledge
+    3. Parser wyciąga tekst
+    4. Chunker dzieli na fragmenty
+    5. Zapis do Supabase (bez embeddingów)
+
+    Query /status/{task_id} aby sprawdzić postęp.
+    """
+    # Przygotowanie pliku tymczasowego
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="kb_task_", dir=str(tmp_root))
+    safe_name = sanitize_filename(file.filename or "file")
+    tmp_path = Path(tmp_dir) / safe_name
+
+    # Zapis pliku
+    written = await save_upload_streamed(file, tmp_path)
+    if written > MAX_FILE_SIZE:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=f"Plik '{safe_name}' przekracza limit 50MB")
+
+    validate_file_on_disk(tmp_path, safe_name)
+
+    # Uruchomienie taska Celery
+    async_result = parse_and_store_to_knowledge.delay(
+        str(tmp_path),
+        safe_name,
+        tag=tag,
+        document_type=document_type,
+        version=version
+    )
+
+    return {
+        "task_id": async_result.id,
+        "status": "queued",
+        "message": "Plik został wysłany do parsowania i zapisu w bazie wiedzy. Sprawdź /status/{task_id}"
+    }
+
+
+# ============================================================
+# ENDPOINTY EMBEDDINGÓW PRZENIESIONE DO: backend/embeddings/router.py
+# Dostępne przez app.include_router(embeddings_router)
+#
+# Endpointy:
+# - POST /embeddings/generate
+# - POST /embeddings/generate-for-document
+# - POST /embeddings/generate-for-tag
+# - POST /embeddings/generate-all
+# - GET /embeddings/status
+# ============================================================
+
