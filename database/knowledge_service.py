@@ -2,12 +2,13 @@ from database.supabase_client import get_supabase
 # Importujemy chunker kolegi
 from backend.ingestion.chunker import chunk_text
 from backend.ingestion.models import ChunkConfig
+from database.embedding_service import get_embedding
 
 # Funkcja orkiestrująca proces RAG Ingestion:
 # 1. Insert do knowledge_documents (z raw_text i tagiem).
 # 2. Chunkowanie (użycie ingestion modułu).
 # 3. Insert do knowledge_chunks (z tagiem i document_id).
-def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0"):
+async def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0"):
     supabase = get_supabase()
 
     # Zapis dokumentu ---
@@ -52,18 +53,22 @@ def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: 
     # Używamy funkcji Patryka z pliku chunker.py
     # Zwraca listę obiektów Chunk (z polami text, token_count itd.)
     generated_chunks = chunk_text(raw_text, config)
-    print(f"Generated {len(generated_chunks)} chunks.")
+    print(f"Generated {len(generated_chunks)} chunks. Generating embeddings...")
 
     # Zapis Chunków
     chunks_payload = []
 
     for chunk_obj in generated_chunks:
+        # Wywołujemy OpenAI dla każdego kawałka
+        # (Teraz to będzie chwilę trwało przy dużych plikach - docelowo robi się to w tle/celery)
+        embedding_vector = await get_embedding(chunk_obj.text)
+
         # Mapowanie na kolumny tabeli knowledge_chunks
         chunks_payload.append({
             "document_id": document_id,  # Klucz obcy
             "chunk_text": chunk_obj.text,
             "tag": tag,  # <--- Ważne: Przepisujemy tag z dokumentu do chunka
-            # "embedding": null         # To pole zostawiamy puste, baza wstawi null, bo nie mamy narazie wektorów
+            "embedding": embedding_vector
         })
 
     # Wykonujemy jeden duży insert (bulk insert) zamiast setki małych
@@ -73,5 +78,6 @@ def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: 
     return {
         "document_id": document_id,
         "chunks_created": len(chunks_payload),
-        "tag_assigned": tag
+        "tag_assigned": tag,
+        "embedding_model": "text-embedding-3-small"
     }
