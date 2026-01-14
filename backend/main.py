@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
@@ -55,6 +55,14 @@ app.add_middleware(
 # wczytuje dane z pliku .env
 load_dotenv()
 
+# Authentication routes
+try:
+    from .auth import router as auth_router, get_current_user
+except Exception:
+    from auth import router as auth_router, get_current_user
+
+app.include_router(auth_router)
+
 # Leniwa inicjalizacja OpenAI - nie twórz klienta od razu przy imporcie
 def get_openai_client():
     global client
@@ -93,6 +101,7 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 async def parse_upload(
     files: List[UploadFile] | None = File(None),
     file: UploadFile | None = File(None),
+    user = Depends(get_current_user),
 ):
     """Upload one or many files, parse server-side, and write results into output_test_parser/.
     - Accepts either multiple `files` or single `file` for backward/simple usage.
@@ -369,7 +378,10 @@ async def upload_file(file: UploadFile = File(...)):
 #celery
 
 @app.post("/process")
-async def process_file(file: UploadFile = File(...)):
+async def process_file(
+    file: UploadFile = File(...),
+    user = Depends(get_current_user)
+):
     tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
     tmp_root.mkdir(parents=True, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="task_", dir=str(tmp_root))
@@ -388,7 +400,10 @@ async def process_file(file: UploadFile = File(...)):
 
 
 @app.get("/status/{task_id}")
-def get_status(task_id: str):
+def get_status(
+    task_id: str,
+    user = Depends(get_current_user)
+):
     """Zwraca status zadania Celery i metadane postepu.
     - PENDING/RECEIVED/STARTED/PROGRESS/SUCCESS/FAILURE
     - meta: np. {step: "parsing"}
@@ -422,7 +437,10 @@ def get_status(task_id: str):
 # ---------------------------------------------------------
 
 @app.post("/analyze-social")
-async def analyze_social(report_path: str):
+async def analyze_social(
+    report_path: str,
+    user = Depends(get_current_user)
+):
     """
     PRODUKCYJNY ENDPOINT SOCIAL (S).
     Wymaga klucza OpenAI API. Analizuje plik text.txt ze wskazanej ścieżki.
@@ -512,7 +530,10 @@ OCZEKIWANY FORMAT JSON:
 
 
 @app.post("/analyze-environmental")
-async def analyze_environmental(report_path: str):
+async def analyze_environmental(
+    report_path: str,
+    user = Depends(get_current_user)
+):
     """
     PRODUKCYJNY ENDPOINT ENVIRONMENTAL (E).
     Wymaga klucza OpenAI API. Analizuje twarde dane liczbowe (CO2, woda, energia).
@@ -601,7 +622,10 @@ OCZEKIWANY FORMAT JSON:
         raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
 
 @app.post("/analyze-governance")
-async def analyze_governance(report_path: str):
+async def analyze_governance(
+    report_path: str,
+    user = Depends(get_current_user)
+):
     """
     PRODUKCYJNY ENDPOINT GOVERNANCE (G).
     Wymaga klucza OpenAI API. Analizuje dokumenty pod kątem ładu korporacyjnego.
@@ -713,7 +737,10 @@ class KnowledgeInput(BaseModel):
     tag: Optional[str] = "general" # Domyślny tag, jeśli user nie poda
 
 @app.post("/knowledge/add")
-async def add_knowledge(item: KnowledgeInput):
+async def add_knowledge(
+    item: KnowledgeInput,
+    user = Depends(get_current_user)
+):
     """
     Endpoint do zasilania bazy wiedzy.
     Przyjmuje dokument, zapisuje oryginał i tnie go na kawałki (chunks).
@@ -740,7 +767,8 @@ async def upload_knowledge_files(
     files: List[UploadFile] = File(...),
     tag: str = Form("general"),
     document_type: str = Form("general"),
-    version: str = Form("1.0")
+    version: str = Form("1.0"),
+    user = Depends(get_current_user)
 ):
     """
     Endpoint do przesyłania plików do bazy wiedzy ("knowledge_documents", nie "knowledge_chunks"!!!!).
