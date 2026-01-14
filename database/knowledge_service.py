@@ -7,7 +7,7 @@ from backend.ingestion.models import ChunkConfig
 # 1. Insert do knowledge_documents (z raw_text i tagiem).
 # 2. Chunkowanie (użycie ingestion modułu).
 # 3. Insert do knowledge_chunks (z tagiem i document_id).
-def add_document_to_knowledge_base(title: str, source: str, full_text: str, tag: str = "general"):
+def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0"):
     supabase = get_supabase()
 
     # Zapis dokumentu ---
@@ -18,7 +18,9 @@ def add_document_to_knowledge_base(title: str, source: str, full_text: str, tag:
         "title": title,
         "source": source,
         "tag": tag,  # Zapisujemy tag
-        "raw_text": full_text  # Zapisujemy pełny tekst oryginału
+        "raw_text": raw_text,  # Zapisujemy pełny tekst oryginału
+        "document_type": document_type,
+        "version": version
     }
 
     doc_response = supabase.table("knowledge_documents").insert(document_payload).execute()
@@ -49,7 +51,7 @@ def add_document_to_knowledge_base(title: str, source: str, full_text: str, tag:
 
     # Używamy funkcji Patryka z pliku chunker.py
     # Zwraca listę obiektów Chunk (z polami text, token_count itd.)
-    generated_chunks = chunk_text(full_text, config)
+    generated_chunks = chunk_text(raw_text, config)
     print(f"Generated {len(generated_chunks)} chunks.")
 
     # Zapis Chunków

@@ -8,6 +8,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
+from database.knowledge_service import add_document_to_knowledge_base
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk
 from pydantic import BaseModel
 
@@ -708,7 +709,7 @@ except ImportError:
 class KnowledgeInput(BaseModel):
     title: str
     source: str         # np. nazwa pliku lub URL
-    full_text: str      # To trafi do kolumny 'raw_text'
+    raw_text: str       # To trafi do kolumny 'raw_text'
     tag: Optional[str] = "general" # Domyślny tag, jeśli user nie poda
 
 @app.post("/knowledge/add")
@@ -721,7 +722,7 @@ async def add_knowledge(item: KnowledgeInput):
         result = add_document_to_knowledge_base(
             title=item.title,
             source=item.source,
-            full_text=item.full_text,
+            raw_text=item.raw_text,
             tag=item.tag
         )
         return {
@@ -732,3 +733,70 @@ async def add_knowledge(item: KnowledgeInput):
     except Exception as e:
         print(f"Error adding knowledge: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/upload")
+async def upload_knowledge_files(
+    files: List[UploadFile] = File(...),
+    tag: str = Form("general"),
+    document_type: str = Form("general"),
+    version: str = Form("1.0")
+):
+    """
+    Endpoint do przesyłania plików do bazy wiedzy ("knowledge_documents", nie "knowledge_chunks"!!!!).
+    Parsuje pliki, wyciąga tekst i zapisuje do Supabase (dokumenty + chunki).
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="Brak przesłanych plików.")
+
+    results = []
+    dispatcher = ParserDispatcher()
+
+    # Tworzymy folder tymczasowy
+    tmp_dir = Path(tempfile.mkdtemp(prefix="knowledge_upload_"))
+    try:
+        for upload_file in files:
+            safe_name = sanitize_filename(upload_file.filename or "unknown")
+            tmp_path = tmp_dir / safe_name
+
+            await save_upload_streamed(upload_file, tmp_path)
+
+            try:
+                parse_result = dispatcher.parse(tmp_path)
+                raw_text = parse_result.text
+
+                if not raw_text.strip():
+                    results.append({
+                        "file": safe_name,
+                        "status": "skipped",
+                        "reason": "Brak wyodrębnionego tekstu."
+                    })
+                    continue
+
+                db_res = add_document_to_knowledge_base(
+                    title=safe_name,
+                    source=f"upload:{safe_name}",
+                    raw_text=raw_text,
+                    tag=tag,
+                    document_type=document_type,
+                    version=version
+                )
+
+                results.append({
+                    "file": safe_name,
+                    "status": "success",
+                    "document_id": db_res["document_id"]
+                })
+
+            except Exception as e:
+                results.append({
+                    "file": safe_name,
+                    "status": "error",
+                    "detail": str(e)
+                })
+
+    finally:
+        # Usuwamy pliki tymczasowe
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return {"results": results}
