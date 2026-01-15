@@ -70,7 +70,7 @@ async def generate_single_embedding(request: EmbeddingRequest):
     }
     """
     try:
-        embedding = generate_embedding(request.text, model=request.model)
+        embedding = await generate_embedding(request.text, model=request.model)
         return {
             "embedding": embedding,
             "model": request.model,
@@ -109,7 +109,7 @@ async def generate_document_embeddings(request: DocumentEmbeddingRequest):
     }
     """
     try:
-        result = generate_embeddings_for_document(request.document_id, model=request.model)
+        result = await generate_embeddings_for_document(request.document_id, model=request.model)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
@@ -141,7 +141,7 @@ async def generate_tag_embeddings(request: TagEmbeddingRequest):
     }
     """
     try:
-        result = generate_embeddings_by_tag(request.tag, model=request.model)
+        result = await generate_embeddings_by_tag(request.tag, model=request.model)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
@@ -171,7 +171,7 @@ async def generate_all_embeddings(model: str = "text-embedding-3-small"):
     }
     """
     try:
-        result = generate_embeddings_for_all_documents(model=model)
+        result = await generate_embeddings_for_all_documents(model=model)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
