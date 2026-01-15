@@ -748,14 +748,14 @@ class KnowledgeInput(BaseModel):
 @app.post("/knowledge/add")
 async def add_knowledge(
     item: KnowledgeInput,
-    user = Depends(get_current_user)
+    user = Depends(get_current_user) # zakomentuj jak chcesz testować, a nie masz pasów do autoryzacji (kłódka przy endpointcie w swaggerze)
 ):
     """
     Endpoint do zasilania bazy wiedzy.
     Przyjmuje dokument, zapisuje oryginał i tnie go na kawałki (chunks).
     """
     try:
-        result = add_document_to_knowledge_base(
+        result = await add_document_to_knowledge_base(
             title=item.title,
             source=item.source,
             raw_text=item.raw_text,
@@ -907,3 +907,104 @@ async def parse_and_store_knowledge(
 # - GET /embeddings/status
 # ============================================================
 
+
+# ==========================================
+#  USER DOCUMENTS (RAG UŻYTKOWNIKA)
+# ==========================================
+
+# Import serwisu, który przed chwilą stworzyliśmy
+try:
+    from backend.services.user_document_service import process_and_save_user_document
+except ImportError:
+    from database.user_documents_service import process_and_save_user_document
+
+
+@app.post("/user/documents/upload")
+async def upload_user_document(
+        file: UploadFile = File(...),
+        tag: str = Form("project_x"),  # Użytkownik może otagować plik (np. nazwą projektu)
+        user=Depends(get_current_user)
+):
+    """
+    Kompleksowy endpoint dla użytkownika:
+    1. Upload pliku.
+    2. Parsowanie tekstu (PDF/DOCX -> TXT).
+    3. Zapis do bazy (user_documents).
+    4. Chunking + Embedding (user_document_chunks).
+    """
+
+    # 1. Walidacja usera
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="User ID not found")
+
+    user_id = user['id']
+
+    # 2. Przygotowanie pliku i parsowanie
+    dispatcher = ParserDispatcher()
+
+    # Tworzymy folder tymczasowy
+    tmp_dir = Path(tempfile.mkdtemp(prefix="user_rag_"))
+    try:
+        safe_name = sanitize_filename(file.filename or "uploaded_doc")
+        tmp_path = tmp_dir / safe_name
+
+        # Zapis na dysk
+        await save_upload_streamed(file, tmp_path)
+
+        # Ekstrakcja tekstu (używamy Waszych parserów)
+        parse_result = dispatcher.parse(tmp_path)
+        raw_text = parse_result.text
+
+        if not raw_text or not raw_text.strip():
+            raise HTTPException(status_code=400, detail="Nie udało się wydobyć tekstu z pliku.")
+
+        # 3. Wywołanie serwisu (Logika biznesowa + Embeddingi)
+        # To tutaj dzieje się magia, którą napisałeś w user_document_service.py
+        result = await process_and_save_user_document(
+            user_id=str(user_id),
+            filename=safe_name,
+            raw_text=raw_text,
+            file_type=tmp_path.suffix.replace(".", ""),  # np. 'pdf'
+            tag=tag
+        )
+
+        return {
+            "status": "success",
+            "filename": safe_name,
+            "details": result
+        }
+
+    except Exception as e:
+        print(f"Error processing user document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        # Sprzątanie
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+# =============== TEST EMBEDDINGU ==============
+# Importujemy nasz nowy serwis
+try:
+    from database.embedding_service import get_embedding
+except ImportError:
+    from database.embedding_service import get_embedding
+
+# Model dla testu
+class EmbeddingTestInput(BaseModel):
+    text: str
+
+@app.post("/test-embedding")
+async def test_embedding_generation(item: EmbeddingTestInput):
+    """
+    Endpoint testowy (Task #2).
+    Sprawdza, czy mamy połączenie z OpenAI i czy potrafimy wygenerować wektor.
+    """
+    vector = await get_embedding(item.text)
+
+    return {
+        "status": "success",
+        "input_text_preview": item.text[:50] + "...",
+        "vector_length": len(vector),  # Powinno być 1536 dla text-embedding-3-small
+        "vector_preview": vector[:5]  # Pokażmy tylko 5 pierwszych liczb, żeby nie zapchać ekranu
+    }
+# ========= KONIEC TESTU EMBEDDINGU =========

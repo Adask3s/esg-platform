@@ -5,41 +5,43 @@ Używa OpenAI text-embedding-3-small (1536 wymiarów).
 
 import os
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from database.supabase_client import get_supabase
 
 load_dotenv()
 
-
-def get_openai_embedding_client() -> Optional[OpenAI]:
-    """Inicjalizacja klienta OpenAI dla embeddingów."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or not api_key.startswith("sk-"):
-        print("WARNING: Brak poprawnego klucza OPENAI_API_KEY dla embeddingów")
-        return None
-
-    try:
-        return OpenAI(api_key=api_key)
-    except Exception as e:
-        print(f"ERROR: Nie można utworzyć klienta OpenAI dla embeddingów: {e}")
-        return None
+# Globalny async client dla wydajności
+_aclient: Optional[AsyncOpenAI] = None
 
 
-def generate_embedding(text: str, model: str = "text-embedding-3-small") -> Optional[List[float]]:
+def _get_async_client() -> AsyncOpenAI:
+    """Inicjalizacja globalnego async klienta OpenAI."""
+    global _aclient
+    if _aclient is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key or not api_key.startswith("sk-"):
+            raise Exception("Brak poprawnego klucza OPENAI_API_KEY dla embeddingów")
+        _aclient = AsyncOpenAI(api_key=api_key)
+    return _aclient
+
+
+async def get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
     """
-    Generuje embedding dla pojedynczego tekstu.
+    Generuje embedding dla pojedynczego tekstu (async).
+    Używamy AsyncOpenAI dla FastAPI.
 
     Args:
         text: Tekst do embedowania
         model: Model OpenAI (domyślnie text-embedding-3-small - 1536 wymiarów)
 
     Returns:
-        Lista floatów (wektor embedding) lub None w przypadku błędu
+        Lista floatów (wektor embedding)
     """
-    client = get_openai_embedding_client()
-    if not client:
-        raise Exception("Brak klienta OpenAI - sprawdź konfigurację API key")
+    if not text:
+        return []
+
+    client = _get_async_client()
 
     try:
         # Ograniczenie długości tekstu (max ~8000 tokenów dla text-embedding-3-small)
@@ -49,7 +51,10 @@ def generate_embedding(text: str, model: str = "text-embedding-3-small") -> Opti
             text = text[:max_chars]
             print(f"WARNING: Tekst został skrócony do {max_chars} znaków")
 
-        response = client.embeddings.create(
+        # Zamiana znaków nowej linii na spacje to dobra praktyka przy embeddingach
+        text = text.replace("\n", " ")
+
+        response = await client.embeddings.create(
             model=model,
             input=text
         )
@@ -62,9 +67,26 @@ def generate_embedding(text: str, model: str = "text-embedding-3-small") -> Opti
         raise
 
 
-def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
+async def generate_embedding(text: str, model: str = "text-embedding-3-small") -> Optional[List[float]]:
     """
-    Generuje embeddingi dla wielu tekstów naraz (batch).
+    Alias dla get_embedding() - backward compatibility.
+
+    Args:
+        text: Tekst do embedowania
+        model: Model OpenAI (domyślnie text-embedding-3-small - 1536 wymiarów)
+
+    Returns:
+        Lista floatów (wektor embedding) lub None w przypadku błędu
+    """
+    try:
+        return await get_embedding(text, model)
+    except Exception:
+        return None
+
+
+async def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
+    """
+    Generuje embeddingi dla wielu tekstów naraz (batch) - async.
     OpenAI API pozwala na max ~2048 requestów w jednym batchu.
 
     Args:
@@ -74,9 +96,7 @@ def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-s
     Returns:
         Lista wektorów embeddingów
     """
-    client = get_openai_embedding_client()
-    if not client:
-        raise Exception("Brak klienta OpenAI - sprawdź konfigurację API key")
+    client = _get_async_client()
 
     if not texts:
         return []
@@ -93,7 +113,7 @@ def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-s
             max_chars = 30000
             truncated_batch = [t[:max_chars] if len(t) > max_chars else t for t in batch]
 
-            response = client.embeddings.create(
+            response = await client.embeddings.create(
                 model=model,
                 input=truncated_batch
             )
@@ -111,6 +131,7 @@ def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-s
 def update_chunk_embedding(chunk_id: str, embedding: List[float]) -> Dict[str, Any]:
     """
     Aktualizuje embedding dla istniejącego chunka w Supabase.
+    Synchroniczna funkcja (Supabase client jest sync).
 
     Args:
         chunk_id: UUID chunka w tabeli knowledge_chunks
@@ -140,9 +161,9 @@ def update_chunk_embedding(chunk_id: str, embedding: List[float]) -> Dict[str, A
         raise
 
 
-def generate_embeddings_for_document(document_id: str, model: str = "text-embedding-3-small") -> Dict[str, Any]:
+async def generate_embeddings_for_document(document_id: str, model: str = "text-embedding-3-small") -> Dict[str, Any]:
     """
-    Generuje embeddingi dla wszystkich chunków należących do danego dokumentu.
+    Generuje embeddingi dla wszystkich chunków należących do danego dokumentu (async).
 
     Args:
         document_id: UUID dokumentu w tabeli knowledge_documents
@@ -171,9 +192,9 @@ def generate_embeddings_for_document(document_id: str, model: str = "text-embedd
     except Exception as e:
         raise Exception(f"Błąd pobierania chunków: {e}")
 
-    # 2. Generuj embeddingi (batch)
+    # 2. Generuj embeddingi (batch) - async
     try:
-        embeddings = generate_embeddings_batch(chunk_texts, model=model)
+        embeddings = await generate_embeddings_batch(chunk_texts, model=model)
     except Exception as e:
         raise Exception(f"Błąd generowania embeddingów: {e}")
 
@@ -199,9 +220,9 @@ def generate_embeddings_for_document(document_id: str, model: str = "text-embedd
     }
 
 
-def generate_embeddings_for_all_documents(model: str = "text-embedding-3-small") -> Dict[str, Any]:
+async def generate_embeddings_for_all_documents(model: str = "text-embedding-3-small") -> Dict[str, Any]:
     """
-    Generuje embeddingi dla WSZYSTKICH chunków w bazie, które nie mają jeszcze embeddingu.
+    Generuje embeddingi dla WSZYSTKICH chunków w bazie, które nie mają jeszcze embeddingu (async).
     UWAGA: Może być kosztowne dla dużych baz!
 
     Returns:
@@ -226,9 +247,9 @@ def generate_embeddings_for_all_documents(model: str = "text-embedding-3-small")
     except Exception as e:
         raise Exception(f"Błąd pobierania chunków: {e}")
 
-    # 2. Generuj embeddingi (batch)
+    # 2. Generuj embeddingi (batch) - async
     try:
-        embeddings = generate_embeddings_batch(chunk_texts, model=model)
+        embeddings = await generate_embeddings_batch(chunk_texts, model=model)
     except Exception as e:
         raise Exception(f"Błąd generowania embeddingów: {e}")
 
@@ -254,9 +275,9 @@ def generate_embeddings_for_all_documents(model: str = "text-embedding-3-small")
     }
 
 
-def generate_embeddings_by_tag(tag: str, model: str = "text-embedding-3-small") -> Dict[str, Any]:
+async def generate_embeddings_by_tag(tag: str, model: str = "text-embedding-3-small") -> Dict[str, Any]:
     """
-    Generuje embeddingi dla wszystkich chunków z danym tagiem (np. 'social', 'environmental').
+    Generuje embeddingi dla wszystkich chunków z danym tagiem (np. 'social', 'environmental') - async.
 
     Args:
         tag: Tag do filtrowania chunków (np. 'social', 'environmental', 'governance')
@@ -285,9 +306,9 @@ def generate_embeddings_by_tag(tag: str, model: str = "text-embedding-3-small") 
     except Exception as e:
         raise Exception(f"Błąd pobierania chunków dla tagu '{tag}': {e}")
 
-    # 2. Generuj embeddingi (batch)
+    # 2. Generuj embeddingi (batch) - async
     try:
-        embeddings = generate_embeddings_batch(chunk_texts, model=model)
+        embeddings = await generate_embeddings_batch(chunk_texts, model=model)
     except Exception as e:
         raise Exception(f"Błąd generowania embeddingów: {e}")
 
