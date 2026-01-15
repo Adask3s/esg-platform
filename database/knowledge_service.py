@@ -2,12 +2,13 @@ from database.supabase_client import get_supabase
 # Importujemy chunker kolegi
 from backend.ingestion.chunker import chunk_text
 from backend.ingestion.models import ChunkConfig
+from database.embedding_service import get_embedding
 
 # Funkcja orkiestrująca proces RAG Ingestion:
 # 1. Insert do knowledge_documents (z raw_text i tagiem).
 # 2. Chunkowanie (użycie ingestion modułu).
 # 3. Insert do knowledge_chunks (z tagiem i document_id).
-def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0"):
+async def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0"):
     supabase = get_supabase()
 
     # Zapis dokumentu ---
@@ -52,28 +53,41 @@ def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: 
     # Używamy funkcji Patryka z pliku chunker.py
     # Zwraca listę obiektów Chunk (z polami text, token_count itd.)
     generated_chunks = chunk_text(raw_text, config)
-    print(f"Generated {len(generated_chunks)} chunks.")
+    print(f"Generated {len(generated_chunks)} chunks. Generating embeddings...")
 
     # Zapis Chunków (ADAPTACJA DO ISTNIEJĄCEJ STRUKTURY)
     chunks_payload = []
+    skipped_chunks = 0
 
     for chunk_obj in generated_chunks:
-        # Mapowanie na kolumny tabeli knowledge_chunks (TWOJA STRUKTURA)
-        # Twoja tabela: id, document_id, chunk_text, tag, embedding, created_at
-        chunks_payload.append({
-            "document_id": document_id,  # uuid NOT NULL
-            "chunk_text": chunk_obj.text,  # text NULL
-            "tag": tag,  # varchar NULL
-            # embedding - NULL (generowane osobno przez endpoint /embeddings/*)
-            # created_at - NULL (baza wstawi automatycznie)
-        })
+        try:
+            # Wywołujemy OpenAI dla każdego kawałka - embeddingi generowane OD RAZU
+            embedding_vector = await get_embedding(chunk_obj.text)
+
+            # Mapowanie na kolumny tabeli knowledge_chunks
+            chunks_payload.append({
+                "document_id": document_id,  # uuid NOT NULL
+                "chunk_text": chunk_obj.text,  # text NULL
+                "tag": tag,  # varchar NULL
+                "embedding": embedding_vector  # Embedding generowany od razu
+                # created_at - NULL (baza wstawi automatycznie)
+            })
+        except Exception as e:
+            # Jeśli embedding failuje, pomijamy chunk i kontynuujemy
+            print(f"WARNING: Nie udało się wygenerować embeddingu dla chunka: {e}")
+            skipped_chunks += 1
+            continue
 
     # Wykonujemy jeden duży insert (bulk insert) zamiast setki małych
     if chunks_payload:
         supabase.table("knowledge_chunks").insert(chunks_payload).execute()
 
+    print(f"Successfully inserted {len(chunks_payload)} chunks with embeddings. Skipped: {skipped_chunks}")
+
     return {
         "document_id": document_id,
         "chunks_created": len(chunks_payload),
-        "tag_assigned": tag
+        "chunks_skipped": skipped_chunks,
+        "tag_assigned": tag,
+        "embedding_model": "text-embedding-3-small"
     }
