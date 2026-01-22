@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from database.embedding_service import (
+from backend.embeddings.embedding_service import (
     generate_embedding,
     generate_embeddings_for_document,
     generate_embeddings_for_all_documents,
@@ -37,6 +37,7 @@ class DocumentEmbeddingRequest(BaseModel):
     """Model do generowania embeddingów dla całego dokumentu."""
     document_id: str
     model: str = "text-embedding-3-small"
+    table_name: str = "knowledge_chunks"  # Nowe pole do obslugi zarowno bazy wiedzy jak i dokumentow uzytkownika
 
 
 class TagEmbeddingRequest(BaseModel):
@@ -109,7 +110,11 @@ async def generate_document_embeddings(request: DocumentEmbeddingRequest):
     }
     """
     try:
-        result = await generate_embeddings_for_document(request.document_id, model=request.model)
+        result = await generate_embeddings_for_document(
+            request.document_id,
+            model=request.model,
+            table_name=request.table_name  # Przekazujemy parametr
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")

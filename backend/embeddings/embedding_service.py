@@ -128,7 +128,7 @@ async def generate_embeddings_batch(texts: List[str], model: str = "text-embeddi
         raise
 
 
-def update_chunk_embedding(chunk_id: str, embedding: List[float]) -> Dict[str, Any]:
+def update_chunk_embedding(chunk_id: str, embedding: List[float], table_name: str = "knowledge_chunks") -> Dict[str, Any]:
     """
     Aktualizuje embedding dla istniejącego chunka w Supabase.
     Synchroniczna funkcja (Supabase client jest sync).
@@ -143,7 +143,9 @@ def update_chunk_embedding(chunk_id: str, embedding: List[float]) -> Dict[str, A
     supabase = get_supabase()
 
     try:
-        response = supabase.table("knowledge_chunks").update({
+        # ZMIANA: używamy zmiennej table_name zamiast wpisanego na sztywno "knowledge_chunks"
+        # żeby to działało dla bazy danych, ale tez dokumentow uzytkownika
+        response = supabase.table(table_name).update({
             "embedding": embedding
         }).eq("id", chunk_id).execute()
 
@@ -161,7 +163,7 @@ def update_chunk_embedding(chunk_id: str, embedding: List[float]) -> Dict[str, A
         raise
 
 
-async def generate_embeddings_for_document(document_id: str, model: str = "text-embedding-3-small") -> Dict[str, Any]:
+async def generate_embeddings_for_document(document_id: str, model: str = "text-embedding-3-small", table_name: str = "knowledge_chunks") -> Dict[str, Any]:
     """
     Generuje embeddingi dla wszystkich chunków należących do danego dokumentu (async).
 
@@ -176,7 +178,7 @@ async def generate_embeddings_for_document(document_id: str, model: str = "text-
 
     # 1. Pobierz wszystkie chunki dla tego dokumentu
     try:
-        response = supabase.table("knowledge_chunks").select("id, chunk_text").eq("document_id", document_id).execute()
+        response = supabase.table(table_name).select("id, chunk_text").eq("document_id", document_id).execute()
 
         if not response.data:
             return {
@@ -204,7 +206,7 @@ async def generate_embeddings_for_document(document_id: str, model: str = "text-
 
     for chunk_id, embedding in zip(chunk_ids, embeddings):
         try:
-            update_chunk_embedding(chunk_id, embedding)
+            update_chunk_embedding(chunk_id, embedding, table_name=table_name)
             updated_count += 1
         except Exception as e:
             errors.append({"chunk_id": chunk_id, "error": str(e)})

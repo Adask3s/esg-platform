@@ -983,28 +983,9 @@ async def upload_user_document(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 # =============== TEST EMBEDDINGU ==============
-# Importujemy nasz nowy serwis
-try:
-    from database.embedding_service import get_embedding
-except ImportError:
-    from database.embedding_service import get_embedding
-
 # Model dla testu
 class EmbeddingTestInput(BaseModel):
     text: str
 
-@app.post("/test-embedding")
-async def test_embedding_generation(item: EmbeddingTestInput):
-    """
-    Endpoint testowy (Task #2).
-    Sprawdza, czy mamy połączenie z OpenAI i czy potrafimy wygenerować wektor.
-    """
-    vector = await get_embedding(item.text)
-
-    return {
-        "status": "success",
-        "input_text_preview": item.text[:50] + "...",
-        "vector_length": len(vector),  # Powinno być 1536 dla text-embedding-3-small
-        "vector_preview": vector[:5]  # Pokażmy tylko 5 pierwszych liczb, żeby nie zapchać ekranu
-    }
+# Usuwam swój tymczasowy endpoint test/embedding, bo patryk ma go w swoim panelu administracyjnym (router.py)
 # ========= KONIEC TESTU EMBEDDINGU =========
