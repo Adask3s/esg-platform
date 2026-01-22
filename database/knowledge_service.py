@@ -2,7 +2,7 @@ from database.supabase_client import get_supabase
 # Importujemy chunker kolegi
 from backend.ingestion.chunker import chunk_text
 from backend.ingestion.models import ChunkConfig
-from database.embedding_service import get_embedding
+from backend.embeddings.embedding_service import get_embedding
 
 # Funkcja orkiestrująca proces RAG Ingestion:
 # 1. Insert do knowledge_documents (z raw_text i tagiem).
