@@ -3,7 +3,7 @@ from database.supabase_client import get_supabase
 from backend.ingestion.chunker import chunk_text
 from backend.ingestion.models import ChunkConfig
 # Importujemy Twój działający serwis embeddingów
-from database.embedding_service import get_embedding
+from backend.embeddings.embedding_service import get_embedding
 
 
 async def process_and_save_user_document(
