@@ -27,6 +27,12 @@ try:
 except ImportError:
     from .embeddings import router as embeddings_router  # type: ignore
 
+# Router dokumentów (lista plików użytkownika i bazy wiedzy)
+try:
+    from backend.documents_getter_endpoints import router as documents_router
+except ImportError:
+    from .documents_getter_endpoints import router as documents_router  # type: ignore
+
 # Ingestion (scraping + chunking)
 from .ingestion import (
     IngestUrlRequest,
@@ -60,6 +66,8 @@ app.add_middleware(
 
 # Podłączenie routera embeddingów (ZADANIE 2 - uporządkowany kod)
 app.include_router(embeddings_router)
+# Podłączenie routera dokumentów (nowe endpointy listujące)
+app.include_router(documents_router)
 
 # wczytuje dane z pliku .env
 load_dotenv()
