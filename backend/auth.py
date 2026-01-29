@@ -96,3 +96,29 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
         )
     access_token = create_access_token({"sub": user["username"], "user_id": user["id"]}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     return {"access_token": access_token, "token_type": "bearer"}
+
+class ContactRequest(BaseModel):
+    email: str
+    problem: str
+
+
+@router.post("/contact")
+def contact(contact: ContactRequest):
+    """
+    Simple contact form endpoint
+    In production, this should send an email or save to database
+    """
+    try:
+        # Log the contact request
+        print(f"[CONTACT] Email: {contact.email}, Problem: {contact.problem}")
+        
+        # TODO: Send email or save to database
+        # For now, just return success
+        
+        return {
+            "status": "success",
+            "message": "Your message has been received. We'll get back to you soon."
+        }
+    except Exception as e:
+        print(f"[CONTACT ERROR] {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
