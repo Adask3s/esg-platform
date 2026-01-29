@@ -989,3 +989,80 @@ class EmbeddingTestInput(BaseModel):
 
 # Usuwam swój tymczasowy endpoint test/embedding, bo patryk ma go w swoim panelu administracyjnym (router.py)
 # ========= KONIEC TESTU EMBEDDINGU =========
+
+# ======= ENDPOINT DO TESTU FINALNEGO ZAPYTANIA DO MODELU ========
+# Import funkcji Damiana (Retrieval)
+from backend.RAG.rag_retriever import retrieve_context_async
+
+# Import Twojej funkcji (Prompt Injection)
+from backend.RAG.prompt_builder import construct_prompt
+
+# ==========================================
+#  RAG ENDPOINT (Full Pipeline)
+# ==========================================
+
+from pydantic import BaseModel
+from typing import Optional
+
+# Importujemy logikę Damiana/Patryka (Retrieval)
+try:
+    from backend.RAG.rag_retriever import retrieve_context_async
+except ImportError:
+    from .RAG.rag_retriever import retrieve_context_async  # type: ignore
+
+# Importujemy Twój Prompt Builder
+try:
+    from backend.RAG.prompt_builder import construct_prompt
+except ImportError:
+    from .RAG.prompt_builder import construct_prompt  # type: ignore
+
+class ChatRequest(BaseModel):
+    query: Optional[str] = None  # <-- ZMIANA: Teraz query może być puste (None)
+    tag: Optional[str] = None
+
+@app.post("/chat/ask")
+async def ask_chat(request: ChatRequest):
+    """
+    Endpoint obsługujący dwa tryby:
+    1. Chat: User zadaje pytanie (request.query jest wypełnione).
+    2. Raport: User klika guzik (request.query jest puste, request.tag jest "Environmental").
+    """
+
+    # --- LOGIKA "DOMYŚLNEGO PYTANIA" ---
+    final_query = request.query
+
+    # Jeśli użytkownik nie wpisał pytania, ale wybrał TAG -> Generujemy zadanie dla AI
+    if not final_query and request.tag:
+        final_query = (
+            f"Na podstawie dostarczonych dokumentów wygeneruj profesjonalny rozdział raportu ESG "
+            f"dotyczący obszaru: {request.tag}. Uwzględnij kluczowe wskaźniki, emisje i dane liczbowe."
+        )
+
+    # Jeśli użytkownik nie wpisał nic i nie wybrał taga (zabezpieczenie)
+    if not final_query:
+        final_query = "Na podstawie dostarczonych dokumentów wygeneruj profesjonalny rozdział raportu ESG. Uwzględnij kluczowe wskaźniki, emisje i dane liczbowe."
+
+    # --- KROK 1: RETRIEVAL ---
+    # Teraz Retriever szuka w bazie "profesjonalnego rozdziału raportu", a nie pustego ciągu znaków!
+    found_chunks = await retrieve_context_async(
+        query=final_query,  # Używamy wygenerowanego pytania
+        match_count=5,
+        # match_threshold=0.5, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
+        filter_tag=request.tag
+    )
+
+    # --- KROK 2: PROMPT BUILDING ---
+    final_prompt = construct_prompt(
+        query=final_query,  # Używamy wygenerowanego pytania jako instrukcji w prompcie
+        context_chunks=found_chunks,
+        focused_tag=request.tag
+    )
+
+    # --- KROK 3: OUTPUT ---
+    return {
+        "status": "success",
+        "mode": "report_generation" if not request.query else "chat_mode",
+        "final_query_used": final_query,  # Zobaczysz tutaj co system "wymyślił"
+        "input_tag": request.tag,
+        "debug_prompt": final_prompt
+    }
