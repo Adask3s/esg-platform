@@ -1066,11 +1066,31 @@ async def ask_chat(request: ChatRequest):
         focused_tag=request.tag
     )
 
-    # --- KROK 3: OUTPUT ---
+    # --- KROK 3: WYSŁANIE DO OPENAI ---
+    openai_client = get_openai_client()
+    if not openai_client:
+        raise HTTPException(status_code=500, detail="Brak klucza OPENAI_API_KEY w .env")
+
+    try:
+        # UWAGA: construct_prompt zwraca jeden wielki string zawierający instrukcje i kontekst.
+        # Wysyłamy go w całości jako wiadomość użytkownika.
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",  # Używamy taniego i szybkiego modelu do testów
+            messages=[
+                {"role": "user", "content": final_prompt}
+            ],
+            temperature=0.2  # Niska temperatura = twarde trzymanie się faktów z dokumentu
+        )
+        ai_answer = response.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd API OpenAI: {str(e)}")
+
+    # --- KROK 4: OUTPUT ---
     return {
         "status": "success",
         "mode": "report_generation" if not request.query else "chat_mode",
-        "final_query_used": final_query,  # Zobaczysz tutaj co system "wymyślił"
+        "final_query_used": final_query,
         "input_tag": request.tag,
-        "debug_prompt": final_prompt
+        "ai_answer": ai_answer,  # <--- To jest finalny raport z modelu
+        "debug_prompt": final_prompt  # Zostawiamy do weryfikacji w razie halucynacji
     }
