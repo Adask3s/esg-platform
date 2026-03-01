@@ -11,6 +11,7 @@ from database.report_repo import save_report
 from database.knowledge_service import add_document_to_knowledge_base
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk
 from pydantic import BaseModel
+import logging
 
 # Celery imports (support both package and script-run modes)
 try:
@@ -79,6 +80,17 @@ except Exception:
     from auth import router as auth_router, get_current_user
 
 app.include_router(auth_router)
+
+"""
+Logger dla /chat/ask
+filemode = 'w+' do overwrite przy każdym wywołaniu - nie zmieniać!
+"""
+
+logging.basicConfig(filename='logs.log',
+                    filemode='w+',
+                    format='%(asctime)s,%(msecs)03d %(name)s %(levelname)s %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    level=logging.INFO)
 
 # Leniwa inicjalizacja OpenAI - nie twórz klienta od razu przy imporcie
 def get_openai_client():
@@ -1018,7 +1030,7 @@ try:
 except ImportError:
     from .RAG.rag_retriever import retrieve_context_async  # type: ignore
 
-# Importujemy Twój Prompt Builder
+# Importujemy Prompt Builder
 try:
     from backend.RAG.prompt_builder import construct_prompt
 except ImportError:
@@ -1055,7 +1067,7 @@ async def ask_chat(request: ChatRequest):
     found_chunks = await retrieve_context_async(
         query=final_query,  # Używamy wygenerowanego pytania
         match_count=5,
-        # match_threshold=0.5, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
+        # match_threshold=0.1, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
         filter_tag=request.tag
     )
 
@@ -1086,6 +1098,15 @@ async def ask_chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Błąd API OpenAI: {str(e)}")
 
     # --- KROK 4: OUTPUT ---
+    logging.info(request.tag)
+    logging.info("\n\n\n\nFinal Query:")
+    logging.info(final_query)
+    logging.info("\n\n\n\nFinal Prompt:")
+    logging.info(final_prompt)
+    logging.info("\n\n\n\nFound Chunks:")
+    logging.info(found_chunks)
+    logging.info("\n\n\n\nAI Answer:")
+    logging.info(ai_answer)
     return {
         "status": "success",
         "mode": "report_generation" if not request.query else "chat_mode",
