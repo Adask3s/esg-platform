@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 from database.supabase_client import get_supabase
 from backend.embeddings.embedding_service import get_embedding
 
-DEFAULT_MATCH_THRESHOLD: float = 0.5
-DEFAULT_MATCH_COUNT: int = 10
+DEFAULT_MATCH_THRESHOLD: float = 0.75 # próg podobienstwa
+DEFAULT_MATCH_COUNT: int = 12 # top_k embeddingu - ile wartosci bedzie wzietych pod uwage
 
 async def retrieve_context_async(
     query: str,
