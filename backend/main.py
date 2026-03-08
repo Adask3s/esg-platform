@@ -1066,8 +1066,8 @@ async def ask_chat(request: ChatRequest):
     # Teraz Retriever szuka w bazie "profesjonalnego rozdziału raportu", a nie pustego ciągu znaków!
     found_chunks = await retrieve_context_async(
         query=final_query,  # Używamy wygenerowanego pytania
-        match_count=5,
-        # match_threshold=0.1, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
+        match_count=12,
+        # match_threshold=0.75, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
         filter_tag=request.tag
     )
 
@@ -1091,7 +1091,7 @@ async def ask_chat(request: ChatRequest):
             messages=[
                 {"role": "user", "content": final_prompt}
             ],
-            temperature=0.2  # Niska temperatura = twarde trzymanie się faktów z dokumentu
+            temperature=0.4  # Niska temperatura = twarde trzymanie się faktów z dokumentu
         )
         ai_answer = response.choices[0].message.content
     except Exception as e:
