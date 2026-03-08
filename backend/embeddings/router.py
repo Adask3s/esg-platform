@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from backend.embeddings.embedding_service import (
-    generate_embedding,
     generate_embeddings_for_document,
     generate_embeddings_for_all_documents,
     generate_embeddings_by_tag
@@ -27,17 +26,11 @@ router = APIRouter(
 # MODELE PYDANTIC
 # ============================================================
 
-class EmbeddingRequest(BaseModel):
-    """Model do generowania pojedynczego embeddingu (test)."""
-    text: str
-    model: str = "text-embedding-3-small"
-
-
 class DocumentEmbeddingRequest(BaseModel):
     """Model do generowania embeddingów dla całego dokumentu."""
     document_id: str
     model: str = "text-embedding-3-small"
-    table_name: str = "knowledge_chunks"  # Nowe pole do obslugi zarowno bazy wiedzy jak i dokumentow uzytkownika
+    table_name: str = "knowledge_chunks"
 
 
 class TagEmbeddingRequest(BaseModel):
@@ -50,35 +43,6 @@ class TagEmbeddingRequest(BaseModel):
 # ENDPOINTY
 # ============================================================
 
-@router.post("/generate")
-async def generate_single_embedding(request: EmbeddingRequest):
-    """
-    ENDPOINT TESTOWY: Generuje embedding dla pojedynczego tekstu.
-
-    Użyj tego endpointu do testowania czy klucz OpenAI działa poprawnie.
-
-    Body:
-    {
-        "text": "Przykładowy tekst do embedowania",
-        "model": "text-embedding-3-small"  // opcjonalne
-    }
-
-    Returns:
-    {
-        "embedding": [0.123, -0.456, ...],  // 1536 wymiarów
-        "model": "text-embedding-3-small",
-        "dimensions": 1536
-    }
-    """
-    try:
-        embedding = await generate_embedding(request.text, model=request.model)
-        return {
-            "embedding": embedding,
-            "model": request.model,
-            "dimensions": len(embedding)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingu: {str(e)}")
 
 
 @router.post("/generate-for-document")

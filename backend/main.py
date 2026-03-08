@@ -758,37 +758,6 @@ try:
 except ImportError:
     from database.knowledge_service import add_document_to_knowledge_base
 
-# Model wejściowy - dopasowany do tabeli knowledge_documents
-class KnowledgeInput(BaseModel):
-    title: str
-    source: str         # np. nazwa pliku lub URL
-    raw_text: str       # To trafi do kolumny 'raw_text'
-    tag: Optional[str] = "general" # Domyślny tag, jeśli user nie poda
-
-@app.post("/knowledge/add")
-async def add_knowledge(
-    item: KnowledgeInput,
-    user = Depends(get_current_user) # zakomentuj jak chcesz testować, a nie masz pasów do autoryzacji (kłódka przy endpointcie w swaggerze)
-):
-    """
-    Endpoint do zasilania bazy wiedzy.
-    Przyjmuje dokument, zapisuje oryginał i tnie go na kawałki (chunks).
-    """
-    try:
-        result = await add_document_to_knowledge_base(
-            title=item.title,
-            source=item.source,
-            raw_text=item.raw_text,
-            tag=item.tag
-        )
-        return {
-            "status": "success",
-            "message": "Dokument i chunki zostały zapisane w Supabase",
-            "data": result
-        }
-    except Exception as e:
-        print(f"Error adding knowledge: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/knowledge/upload")
