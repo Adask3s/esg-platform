@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+import openai
 from pathlib import Path
 import tempfile
 import shutil
@@ -1009,6 +1010,7 @@ class ChatRequest(BaseModel):
     query: Optional[str] = None  # <-- ZMIANA: Teraz query może być puste (None)
     tag: Optional[str] = None
 
+
 @app.post("/chat/ask")
 async def ask_chat(request: ChatRequest):
     """
@@ -1032,41 +1034,82 @@ async def ask_chat(request: ChatRequest):
         final_query = "Na podstawie dostarczonych dokumentów wygeneruj profesjonalny rozdział raportu ESG. Uwzględnij kluczowe wskaźniki, emisje i dane liczbowe."
 
     # --- KROK 1: RETRIEVAL ---
-    # Teraz Retriever szuka w bazie "profesjonalnego rozdziału raportu", a nie pustego ciągu znaków!
     found_chunks = await retrieve_context_async(
-        query=final_query,  # Używamy wygenerowanego pytania
-        match_count=12,
-        # match_threshold=0.75, # TUTAJ USTAWIAMY JAK BARDZO "CZUŁE" JEST WYSZUKIWANIE
+        query=final_query,
+        match_count=5,
         filter_tag=request.tag
     )
 
-    # --- KROK 2: PROMPT BUILDING ---
-    final_prompt = construct_prompt(
-        query=final_query,  # Używamy wygenerowanego pytania jako instrukcji w prompcie
-        context_chunks=found_chunks,
-        focused_tag=request.tag
-    )
+    # --- KROK 2: PROMPT BUILDING & FALLBACK ---
+    if not found_chunks:
+        # FALLBACK: Brak wyników w bazie danych
+        final_prompt = f"""
+SYSTEM ROLE:
+Jesteś ekspertem ds. raportowania ESG.
 
-    # --- KROK 3: WYSŁANIE DO OPENAI ---
+SYTUACJA KRYTYCZNA:
+Użytkownik zadał pytanie, ale w bazie wiedzy firmy NIE ZNALEZIONO żadnych dokumentów źródłowych pasujących do tego zapytania (Oczekiwany Tag: {request.tag or 'Brak'}).
+
+USER QUESTION:
+{final_query}
+
+INSTRUCTIONS:
+1. Twoim absolutnym obowiązkiem jest rozpocząć odpowiedź od dokładnego ostrzeżenia: "⚠️ **Brak danych w dokumentach źródłowych.** W dostarczonej bazie wiedzy nie znalazłem informacji na ten temat. Poniższa odpowiedź opiera się wyłącznie na ogólnych standardach i teorii ESG."
+2. Następnie udziel profesjonalnej, teoretycznej odpowiedzi na pytanie użytkownika.
+3. POD ŻADNYM POZOREM nie wymyślaj żadnych danych liczbowych, nazw własnych ani statystyk przypisywanych analizowanej spółce.
+"""
+    else:
+        # STANDARD FLOW: Mamy kontekst z bazy
+        final_prompt = construct_prompt(
+            query=final_query,
+            context_chunks=found_chunks,
+            focused_tag=request.tag
+        )
+
+    # --- KROK 3: WYSŁANIE DO OPENAI Z ZABEZPIECZENIEM TIMEOUT ---
     openai_client = get_openai_client()
     if not openai_client:
         raise HTTPException(status_code=500, detail="Brak klucza OPENAI_API_KEY w .env")
 
     try:
-        # UWAGA: construct_prompt zwraca jeden wielki string zawierający instrukcje i kontekst.
-        # Wysyłamy go w całości jako wiadomość użytkownika.
+        # Twardy limit czasu na odpowiedź od modelu (np. 15 sekund)
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # Używamy taniego i szybkiego modelu do testów
+            model="gpt-4o-mini",
             messages=[
                 {"role": "user", "content": final_prompt}
             ],
-            temperature=0.4  # Niska temperatura = twarde trzymanie się faktów z dokumentu
+            temperature=0.4,
+            timeout=15.0  # <--- ZABEZPIECZENIE: Czas w sekundach
         )
         ai_answer = response.choices[0].message.content
+
+    except openai.APITimeoutError:
+        # GRACEFUL ERROR: Model zawiesił się i nie odpowiedział w czasie
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout (504): Serwer AI (OpenAI) nie wygenerował odpowiedzi w wyznaczonym czasie (15s). Zbyt duże obciążenie sieci. Spróbuj ponownie."
+        )
+    except openai.RateLimitError:
+        # GRACEFUL ERROR: Skończyły się tokeny / za dużo zapytań w krótkim czasie
+        raise HTTPException(
+            status_code=429,
+            detail="Rate Limit (429): Przekroczono limit zapytań do API OpenAI. Poczekaj chwilę."
+        )
+    except openai.APIError as e:
+        # GRACEFUL ERROR: Błąd wewnętrzny serwerów OpenAI
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bad Gateway (502): Awaria po stronie dostawcy OpenAI: {str(e)}"
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd API OpenAI: {str(e)}")
+        # Pozostałe, nieprzewidziane błędy
+        raise HTTPException(
+            status_code=500,
+            detail=f"Wewnętrzny błąd serwera podczas łączenia z AI: {str(e)}"
+        )
 
     # --- KROK 4: OUTPUT ---
+    import logging
     logging.info(request.tag)
     logging.info("\n\n\n\nFinal Query:")
     logging.info(final_query)
@@ -1076,9 +1119,11 @@ async def ask_chat(request: ChatRequest):
     logging.info(found_chunks)
     logging.info("\n\n\n\nAI Answer:")
     logging.info(ai_answer)
+
     return {
         "status": "success",
         "mode": "report_generation" if not request.query else "chat_mode",
+        "rag_used": bool(found_chunks),
         "final_query_used": final_query,
         "input_tag": request.tag,
         "ai_answer": ai_answer,  # <--- To jest finalny raport z modelu

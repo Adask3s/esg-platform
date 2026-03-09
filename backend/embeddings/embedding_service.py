@@ -5,6 +5,8 @@ Używa OpenAI text-embedding-3-small (1536 wymiarów).
 
 import os
 from typing import List, Dict, Any, Optional
+import asyncio
+import openai
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from database.supabase_client import get_supabase
@@ -29,42 +31,49 @@ def _get_async_client() -> AsyncOpenAI:
 async def get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
     """
     Generuje embedding dla pojedynczego tekstu (async).
-    Używamy AsyncOpenAI dla FastAPI.
-
-    Args:
-        text: Tekst do embedowania
-        model: Model OpenAI (domyślnie text-embedding-3-small - 1536 wymiarów)
-
-    Returns:
-        Lista floatów (wektor embedding)
+    Zawiera mechanizm Exponential Backoff na wypadek awarii API OpenAI.
     """
     if not text:
         return []
 
     client = _get_async_client()
 
-    try:
-        # Ograniczenie długości tekstu (max ~8000 tokenów dla text-embedding-3-small)
-        # Przybliżone: 1 token ≈ 4 znaki, więc 8000 tokenów ≈ 32000 znaków
-        max_chars = 30000
-        if len(text) > max_chars:
-            text = text[:max_chars]
-            print(f"WARNING: Tekst został skrócony do {max_chars} znaków")
+    # Ograniczenie długości tekstu
+    max_chars = 30000
+    if len(text) > max_chars:
+        text = text[:max_chars]
+        print(f"WARNING: Tekst został skrócony do {max_chars} znaków")
 
-        # Zamiana znaków nowej linii na spacje to dobra praktyka przy embeddingach
-        text = text.replace("\n", " ")
+    text = text.replace("\n", " ")
 
-        response = await client.embeddings.create(
-            model=model,
-            input=text
-        )
+    # --- MECHANIZM RETRY (Exponential Backoff) ---
+    max_retries = 3
+    base_delay = 1.0  # sekunda
 
-        embedding = response.data[0].embedding
-        return embedding
+    for attempt in range(max_retries):
+        try:
+            response = await client.embeddings.create(
+                model=model,
+                input=text,
+                timeout=10.0  # Twardy limit czasu (zabezpieczenie przed zawieszeniem)
+            )
+            return response.data[0].embedding
 
-    except Exception as e:
-        print(f"ERROR generating embedding: {e}")
-        raise
+        except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+            # Błędy sieciowe / limity - czekamy i ponawiamy
+            if attempt == max_retries - 1:
+                print(f"CRITICAL: Błąd OpenAI po {max_retries} próbach: {str(e)}")
+                raise Exception(f"Nie udało się wygenerować wektora z powodu awarii OpenAI: {str(e)}")
+
+            delay = base_delay * (2 ** attempt)
+            print(
+                f"Ostrzeżenie: Błąd API OpenAI ({type(e).__name__}). Próba {attempt + 1}/{max_retries}. Czekam {delay}s...")
+            await asyncio.sleep(delay)
+
+        except Exception as e:
+            # Inne błędy (np. zła autoryzacja klucza) - przerywamy natychmiast
+            print(f"ERROR: Krytyczny błąd strukturalny embeddingu: {e}")
+            raise
 
 
 async def generate_embedding(text: str, model: str = "text-embedding-3-small") -> Optional[List[float]]:
@@ -87,45 +96,51 @@ async def generate_embedding(text: str, model: str = "text-embedding-3-small") -
 async def generate_embeddings_batch(texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
     """
     Generuje embeddingi dla wielu tekstów naraz (batch) - async.
-    OpenAI API pozwala na max ~2048 requestów w jednym batchu.
-
-    Args:
-        texts: Lista tekstów do embedowania
-        model: Model OpenAI
-
-    Returns:
-        Lista wektorów embeddingów
+    Zawiera mechanizm Exponential Backoff na wypadek awarii API OpenAI.
     """
     client = _get_async_client()
 
     if not texts:
         return []
 
-    try:
-        # Batch processing - OpenAI obsługuje do 2048 inputów naraz
-        batch_size = 100  # Bezpieczna wartość dla stabilności
-        all_embeddings = []
+    batch_size = 100
+    all_embeddings = []
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        max_chars = 30000
+        truncated_batch = [t[:max_chars] if len(t) > max_chars else t for t in batch]
 
-            # Ograniczenie długości tekstów w batchu
-            max_chars = 30000
-            truncated_batch = [t[:max_chars] if len(t) > max_chars else t for t in batch]
+        # --- MECHANIZM RETRY (Exponential Backoff) ---
+        max_retries = 3
+        base_delay = 1.0
 
-            response = await client.embeddings.create(
-                model=model,
-                input=truncated_batch
-            )
+        for attempt in range(max_retries):
+            try:
+                response = await client.embeddings.create(
+                    model=model,
+                    input=truncated_batch,
+                    timeout=20.0  # Większy timeout dla paczki
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+                break  # Sukces dla tego batcha, wychodzimy z pętli prób
 
-            batch_embeddings = [item.embedding for item in response.data]
-            all_embeddings.extend(batch_embeddings)
+            except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                if attempt == max_retries - 1:
+                    print(f"CRITICAL: Błąd OpenAI Batch po {max_retries} próbach: {str(e)}")
+                    raise Exception(f"Awaria OpenAI podczas przetwarzania paczki wektorów: {str(e)}")
 
-        return all_embeddings
+                delay = base_delay * (2 ** attempt)
+                print(
+                    f"Ostrzeżenie: Błąd API OpenAI Batch ({type(e).__name__}). Próba {attempt + 1}/{max_retries}. Czekam {delay}s...")
+                await asyncio.sleep(delay)
 
-    except Exception as e:
-        print(f"ERROR generating batch embeddings: {e}")
-        raise
+            except Exception as e:
+                print(f"ERROR generating batch embeddings: {e}")
+                raise
+
+    return all_embeddings
 
 
 def update_chunk_embedding(chunk_id: str, embedding: List[float], table_name: str = "knowledge_chunks") -> Dict[str, Any]:
