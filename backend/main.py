@@ -1014,56 +1014,53 @@ class ChatRequest(BaseModel):
 @app.post("/chat/ask")
 async def ask_chat(request: ChatRequest):
     """
-    Endpoint obsługujący dwa tryby:
-    1. Chat: User zadaje pytanie (request.query jest wypełnione).
-    2. Raport: User klika guzik (request.query jest puste, request.tag jest "Environmental").
+    Czysty endpoint czatu Q&A.
+    Służy wyłącznie do odpowiadania na pytania użytkownika na podstawie bazy wektorowej.
     """
 
-    # --- LOGIKA "DOMYŚLNEGO PYTANIA" ---
-    final_query = request.query
-
-    # Jeśli użytkownik nie wpisał pytania, ale wybrał TAG -> Generujemy zadanie dla AI
-    if not final_query and request.tag:
-        final_query = (
-            f"Na podstawie dostarczonych dokumentów wygeneruj profesjonalny rozdział raportu ESG "
-            f"dotyczący obszaru: {request.tag}. Uwzględnij kluczowe wskaźniki, emisje i dane liczbowe."
+    # 1. TWARDA WALIDACJA PYTANIA
+    if not request.query or not request.query.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Pytanie nie może być puste. Aby wygenerować raport, użyj dedykowanego endpointu."
         )
 
-    # Jeśli użytkownik nie wpisał nic i nie wybrał taga (zabezpieczenie)
-    if not final_query:
-        final_query = "Na podstawie dostarczonych dokumentów wygeneruj profesjonalny rozdział raportu ESG. Uwzględnij kluczowe wskaźniki, emisje i dane liczbowe."
+    final_query = request.query.strip()
+
+    # Jeśli frontend nie przyśle tagu, ustawiamy None (brak filtru -> szukamy we wszystkich otagowanych i nieotagowanych)
+    search_tag = request.tag if request.tag else None
 
     # --- KROK 1: RETRIEVAL ---
     found_chunks = await retrieve_context_async(
         query=final_query,
         match_count=5,
-        filter_tag=request.tag
+        filter_tag=search_tag
     )
 
     # --- KROK 2: PROMPT BUILDING & FALLBACK ---
     if not found_chunks:
-        # FALLBACK: Brak wyników w bazie danych
+        # FALLBACK: Brak wyników w bazie danych dla zadanego pytania
         final_prompt = f"""
 SYSTEM ROLE:
-Jesteś ekspertem ds. raportowania ESG.
+Jesteś asystentem AI ds. ESG. Odpowiadasz na pytania użytkowników.
 
 SYTUACJA KRYTYCZNA:
-Użytkownik zadał pytanie, ale w bazie wiedzy firmy NIE ZNALEZIONO żadnych dokumentów źródłowych pasujących do tego zapytania (Oczekiwany Tag: {request.tag or 'Brak'}).
+Użytkownik zadał pytanie, ale w dostarczonych dokumentach NIE ZNALEZIONO żadnych informacji na ten temat.
 
 USER QUESTION:
 {final_query}
 
 INSTRUCTIONS:
-1. Twoim absolutnym obowiązkiem jest rozpocząć odpowiedź od dokładnego ostrzeżenia: "⚠️ **Brak danych w dokumentach źródłowych.** W dostarczonej bazie wiedzy nie znalazłem informacji na ten temat. Poniższa odpowiedź opiera się wyłącznie na ogólnych standardach i teorii ESG."
-2. Następnie udziel profesjonalnej, teoretycznej odpowiedzi na pytanie użytkownika.
-3. POD ŻADNYM POZOREM nie wymyślaj żadnych danych liczbowych, nazw własnych ani statystyk przypisywanych analizowanej spółce.
+1. Rozpocznij odpowiedź od dokładnego ostrzeżenia: "⚠️ **Brak danych w załączonych dokumentach.** W dostarczonej bazie wiedzy nie znalazłem informacji na ten temat. Poniższa odpowiedź opiera się na ogólnej wiedzy."
+2. Następnie udziel profesjonalnej, teoretycznej odpowiedzi na pytanie.
+3. POD ŻADNYM POZOREM nie wymyślaj statystyk ani faktów dotyczących konkretnej firmy.
 """
     else:
-        # STANDARD FLOW: Mamy kontekst z bazy
+        # STANDARD FLOW: Mamy kontekst z bazy.
         final_prompt = construct_prompt(
             query=final_query,
             context_chunks=found_chunks,
-            focused_tag=request.tag
+            focused_tag=search_tag
         )
 
     # --- KROK 3: WYSŁANIE DO OPENAI Z ZABEZPIECZENIEM TIMEOUT ---
@@ -1072,60 +1069,38 @@ INSTRUCTIONS:
         raise HTTPException(status_code=500, detail="Brak klucza OPENAI_API_KEY w .env")
 
     try:
-        # Twardy limit czasu na odpowiedź od modelu (np. 15 sekund)
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "user", "content": final_prompt}
             ],
             temperature=0.4,
-            timeout=15.0  # <--- ZABEZPIECZENIE: Czas w sekundach
+            timeout=15.0
         )
         ai_answer = response.choices[0].message.content
 
     except openai.APITimeoutError:
-        # GRACEFUL ERROR: Model zawiesił się i nie odpowiedział w czasie
-        raise HTTPException(
-            status_code=504,
-            detail="Timeout (504): Serwer AI (OpenAI) nie wygenerował odpowiedzi w wyznaczonym czasie (15s). Zbyt duże obciążenie sieci. Spróbuj ponownie."
-        )
+        raise HTTPException(status_code=504,
+                            detail="Timeout (504): Serwer AI nie odpowiedział w wyznaczonym czasie (15s).")
     except openai.RateLimitError:
-        # GRACEFUL ERROR: Skończyły się tokeny / za dużo zapytań w krótkim czasie
-        raise HTTPException(
-            status_code=429,
-            detail="Rate Limit (429): Przekroczono limit zapytań do API OpenAI. Poczekaj chwilę."
-        )
+        raise HTTPException(status_code=429, detail="Rate Limit (429): Przekroczono limit zapytań OpenAI.")
     except openai.APIError as e:
-        # GRACEFUL ERROR: Błąd wewnętrzny serwerów OpenAI
-        raise HTTPException(
-            status_code=502,
-            detail=f"Bad Gateway (502): Awaria po stronie dostawcy OpenAI: {str(e)}"
-        )
+        raise HTTPException(status_code=502, detail=f"Bad Gateway (502): Awaria dostawcy OpenAI: {str(e)}")
     except Exception as e:
-        # Pozostałe, nieprzewidziane błędy
-        raise HTTPException(
-            status_code=500,
-            detail=f"Wewnętrzny błąd serwera podczas łączenia z AI: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd serwera AI: {str(e)}")
 
     # --- KROK 4: OUTPUT ---
-    import logging
-    logging.info(request.tag)
-    logging.info("\n\n\n\nFinal Query:")
-    logging.info(final_query)
-    logging.info("\n\n\n\nFinal Prompt:")
-    logging.info(final_prompt)
-    logging.info("\n\n\n\nFound Chunks:")
-    logging.info(found_chunks)
-    logging.info("\n\n\n\nAI Answer:")
-    logging.info(ai_answer)
+    logging.info(f"Input Tag: {search_tag}")
+    logging.info(f"\n\nFinal Query:\n{final_query}")
+    logging.info(f"\n\nFound Chunks:\n{found_chunks}")
+    logging.info(f"\n\nAI Answer:\n{ai_answer}")
 
     return {
         "status": "success",
-        "mode": "report_generation" if not request.query else "chat_mode",
+        "mode": "chat_mode",
         "rag_used": bool(found_chunks),
         "final_query_used": final_query,
-        "input_tag": request.tag,
-        "ai_answer": ai_answer,  # <--- To jest finalny raport z modelu
-        "debug_prompt": final_prompt  # Zostawiamy do weryfikacji w razie halucynacji
+        "applied_filter": search_tag or "Brak (przeszukano całą bazę)",
+        "ai_answer": ai_answer,
+        "debug_prompt": final_prompt
     }
