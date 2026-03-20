@@ -81,8 +81,12 @@ def list_knowledge_documents(
     source: Optional[str] = Query(None, description="Filter by source"),
     limit: Optional[int] = Query(50, ge=1, le=500),
     offset: Optional[int] = Query(0, ge=0),
+    user=Depends(get_current_user),
 ):
-    """List documents stored in the knowledge base (from knowledge_documents)."""
+    # tylko admin
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can access knowledge documents")
+
     supabase = get_supabase()
 
     q = supabase.table("knowledge_documents").select(
@@ -124,9 +128,12 @@ def list_all_documents(
     """Combined list of user's documents and knowledge base documents.
     Optional filters and simple pagination are supported.
     """
-    # reuse the two functions above without double querying Supabase client creation
     mine = list_my_documents(tag=tag, limit=limit, offset=offset, user=user)
-    knowledge = list_knowledge_documents(tag=tag, source=source, limit=limit, offset=offset)
+
+    # baza wiedzy tylko kiedy admin
+    knowledge: List[DocumentItem] = []
+    if user and user.get("role") == "admin":
+        knowledge = list_knowledge_documents(tag=tag, source=source, limit=limit, offset=offset, user=user)
 
     # Simple merge; in the future consider separate pagination per-origin
     combined = [*mine, *knowledge]

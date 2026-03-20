@@ -76,7 +76,8 @@ def signup(user: UserCreate):
         print(f"[SIGNUP DEBUG] Hash created, creating user in DB...")
         user_id = create_user(user.username, user.email, hashed)
         print(f"[SIGNUP DEBUG] User created with ID: {user_id}")
-        access_token = create_access_token({"sub": user.username, "user_id": user_id}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+        token_payload = {"sub": user.username, "user_id": str(user_id), "role": "user"}
+        access_token = create_access_token(token_payload, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
         return {"access_token": access_token, "token_type": "bearer"}
     except Exception as e:
         print(f"[SIGNUP ERROR] {type(e).__name__}: {e}")
@@ -94,7 +95,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token = create_access_token({"sub": user["username"], "user_id": user["id"]}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    token_payload = {"sub": user["username"], "user_id": str(user["id"]), "role": user.get("role", "user")}
+    access_token = create_access_token(token_payload, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     return {"access_token": access_token, "token_type": "bearer"}
 
 class ContactRequest(BaseModel):

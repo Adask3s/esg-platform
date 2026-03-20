@@ -2,6 +2,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 from typing import Any, Dict
+import asyncio
 
 from backend.celery.celery_app import celery_app
 
@@ -21,7 +22,7 @@ except Exception:
 
 
 @celery_app.task(bind=True, name="backend.parse_and_store")
-def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: int = 1) -> Dict[str, Any]:
+def parse_and_store(self, tmp_file_path: str, original_filename: str, user_id: str | None = None) -> Dict[str, Any]:
     """Celery task: zparsuj zuploadowany plik i wyslij do output + zapisz w bazie
 
     Parameters:
@@ -93,7 +94,8 @@ def parse_and_store_to_knowledge(
     original_filename: str,
     tag: str = "general",
     document_type: str = "general",
-    version: str = "1.0"
+    version: str = "1.0",
+    uploaded_by: str | None = None,
 ) -> Dict[str, Any]:
     """
     Celery task: Parsuj plik i automatycznie zapisz do bazy wiedzy (Supabase).
@@ -139,14 +141,15 @@ def parse_and_store_to_knowledge(
         # === KROK 2: ZAPIS DO BAZY WIEDZY (z automatycznym chunkowaniem) ===
         self.update_state(state="PROGRESS", meta={"step": "saving_to_knowledge_base", "filename": original_filename})
 
-        kb_result = add_document_to_knowledge_base(
+        kb_result = asyncio.run(add_document_to_knowledge_base(
             title=original_filename,
             source=f"upload:{original_filename}",
             raw_text=raw_text,
             tag=tag,
             document_type=document_type,
-            version=version
-        )
+            version=version,
+            uploaded_by=uploaded_by
+        ))
 
         # === KROK 3: RETURN ===
         return {
