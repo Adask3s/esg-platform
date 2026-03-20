@@ -20,3 +20,6 @@ env/
 
 # Parser outputs
 output_test_parser/
+
+# logs
+*.log

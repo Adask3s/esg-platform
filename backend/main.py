@@ -167,11 +167,9 @@ async def parse_upload(
 
             result = dispatcher.parse(tmp_path)
             manifest = write_result(result, out_root)
-
-            # Zapis do DB (user_id tymczasowo 1; nazwa pliku w input_text; stały response_text)
             try:
                 save_report(
-                    user_id=1,
+                    user_id=str(user["id"]),
                     input_text=str(f.filename),
                     response_text="Plik przetworzony pomyślnie",
                     report_type="parse_result",
@@ -212,7 +210,7 @@ async def parse_upload(
             # DB
             try:
                 report_id = save_report(
-                    user_id=1,
+                    user_id=str(user["id"]),
                     input_text=str(f.filename),
                     response_text="Plik przetworzony pomyślnie",
                     report_type="parse_result",
@@ -425,7 +423,7 @@ async def process_file(
 
     validate_file_on_disk(tmp_path, safe_name)
 
-    async_result = parse_and_store.delay(str(tmp_path), safe_name, 1)
+    async_result = parse_and_store.delay(str(tmp_path), safe_name, str(user["id"]))
     return {"task_id": async_result.id, "status": "queued"}
 
 
@@ -544,7 +542,7 @@ OCZEKIWANY FORMAT JSON:
 
         # 5. Zapis do bazy
         save_report(
-            user_id=1,
+            user_id=str(user["id"]),
             input_text=f"[Social REAL] {report_path}",
             response_text=analysis_result,
             report_type="social_analysis"
@@ -637,7 +635,7 @@ OCZEKIWANY FORMAT JSON:
 
         # 5. Zapis do bazy
         save_report(
-            user_id=1,
+            user_id=str(user["id"]),
             input_text=f"[Environmental REAL] {report_path}",
             response_text=analysis_result,
             report_type="environmental_analysis"
@@ -738,7 +736,7 @@ OCZEKIWANY FORMAT JSON:
 
         # 5. Zapis do bazy
         save_report(
-            user_id=1,
+            user_id=str(user["id"]),
             input_text=f"[Governance REAL] {report_path}",
             response_text=analysis_result,
             report_type="governance_analysis"
@@ -769,6 +767,9 @@ async def upload_knowledge_files(
     version: str = Form("1.0"),
     user = Depends(get_current_user)
 ):
+    #tylko admin moze update knowledge
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can upload knowledge documents")
     """
     Endpoint do przesyłania plików do bazy wiedzy ("knowledge_documents", nie "knowledge_chunks"!!!!).
     Parsuje pliki, wyciąga tekst i zapisuje do Supabase (dokumenty + chunki).
@@ -800,13 +801,14 @@ async def upload_knowledge_files(
                     })
                     continue
 
-                db_res = add_document_to_knowledge_base(
+                db_res = await add_document_to_knowledge_base(
                     title=safe_name,
                     source=f"upload:{safe_name}",
                     raw_text=raw_text,
                     tag=tag,
                     document_type=document_type,
-                    version=version
+                    version=version,
+                    uploaded_by=str(user["id"])
                 )
 
                 results.append({
@@ -835,8 +837,12 @@ async def parse_and_store_knowledge(
     file: UploadFile = File(...),
     tag: str = Form("general"),
     document_type: str = Form("general"),
-    version: str = Form("1.0")
+    version: str = Form("1.0"),
+    user = Depends(get_current_user)
 ):
+    # tylko admin
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can parse and store knowledge docums")
     """
     INTEGRACJA PARSERÓW Z BAZĄ WIEDZY (ZADANIE 1).
 
@@ -875,7 +881,8 @@ async def parse_and_store_knowledge(
         safe_name,
         tag=tag,
         document_type=document_type,
-        version=version
+        version=version,
+        uploaded_by=str(user["id"])
     )
 
     return {
