@@ -14,6 +14,9 @@ from .utils.files import save_upload_streamed, sanitize_filename, validate_file_
 from pydantic import BaseModel
 import logging
 
+# Kaskadowe usuwanie dokumentów użytkownika (dokument + powiązane chunki/wektory)
+from database.user_documents_deleting import delete_user_document_cascade
+
 # Celery imports (support both package and script-run modes)
 try:
     from backend.celery.celery_app import celery_app
@@ -978,6 +981,27 @@ async def upload_user_document(
     finally:
         # Sprzątanie
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class DeleteUserDocumentRequest(BaseModel):
+    document_id: str
+
+
+@app.post("/user/documents/delete", tags=["user-documents"])
+def delete_user_document_endpoint(
+    body: DeleteUserDocumentRequest,
+    user=Depends(get_current_user),
+):
+    """Kasuje dokument usera oraz wszystkie powiązane z nim chunki/wektory.
+
+    Endpoint jest cienki: jedynie bierze user_id z tokena.
+    Walidacja właściciela dokumentu i sama kaskada jest w delete_user_document_cascade().
+    """
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return delete_user_document_cascade(user_id=str(user["id"]), document_id=str(body.document_id))
+
 
 # =============== TEST EMBEDDINGU ==============
 # Model dla testu
