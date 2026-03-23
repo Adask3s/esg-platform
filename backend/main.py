@@ -467,300 +467,114 @@ def get_status(
 # REAL ENDPOINTS (NO MOCKS)
 # ---------------------------------------------------------
 
-@app.post("/analyze-social")
-async def analyze_social(
-    report_path: str,
-    user = Depends(get_current_user)
-):
+class ReportRequest(BaseModel):
+    tag: Optional[str] = None  # Oczekiwane: "Environmental", "Social", "Governance" lub brak
+
+
+@app.post("/report/generate")
+async def generate_report(request: ReportRequest, user=Depends(get_current_user)):
     """
-    PRODUKCYJNY ENDPOINT SOCIAL (S).
-    Wymaga klucza OpenAI API. Analizuje plik text.txt ze wskazanej ścieżki.
+    Zunifikowany endpoint do generowania ustrukturyzowanych raportów ESG (JSON).
+    Wymaga zalogowanego użytkownika. Szuka danych w bazie wektorowej przypisanych do tego usera.
     """
-    # 1. Konfiguracja klienta OpenAI
-    openai_client = get_openai_client()
-    if openai_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail="OpenAI API key is missing. Configure .env file."
-        )
+    # 1. Twarda autoryzacja
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji. Musisz być zalogowany.")
 
-    # 2. Walidacja ścieżki
-    report_dir = Path(report_path)
-    if not report_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
+    user_id = str(user['id'])
 
-    text_file = report_dir / "text.txt"
-    if not text_file.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
+    # 2. Logika Tagów (Jeśli brak tagu -> wymuszamy ogólne ESG)
+    target_tag = request.tag.strip() if request.tag and request.tag.strip() else "ESG"
+    db_filter_tag = request.tag if request.tag and request.tag.strip() else None
 
-    full_text = text_file.read_text(encoding="utf-8")
+    search_query = f"Kluczowe wskaźniki, twarde dane liczbowe, polityki i statystyki dla obszaru: {target_tag}"
 
-    # 3. Prompt Systemowy (Social)
-    social_prompt = f"""Przeanalizuj poniższy tekst raportu budowlanego/ESG i wyciągnij dane dla kategorii SOCIAL (S).
+    # 3. Retrieval - pobranie z bazy wektorowej (Przekazujemy user_id do filtra!)
+    found_chunks = await retrieve_context_async(
+        query=search_query,
+        user_id=user_id,  # <--- KRYTYCZNE: Baza musi szukać tylko w plikach tego użytkownika
+        match_count=15,
+        filter_tag=db_filter_tag
+    )
 
-DANE WEJŚCIOWE:
-{full_text[:50000]}  # Ograniczenie znaków dla bezpieczeństwa tokenów
+    # 4. Obsługa braku danych
+    if not found_chunks:
+        return {
+            "status": "partial_success",
+            "kategoria": target_tag,
+            "message": "⚠️ Brak danych w dokumentach źródłowych dla tego obszaru.",
+            "data": None
+        }
+
+    # 5. Dynamiczny Prompt wymuszający format JSON
+    context_text = "\n\n".join([f"[Fragment {i + 1}]: {chunk}" for i, chunk in enumerate(found_chunks)])
+
+    report_prompt = f"""Przeanalizuj poniższe fragmenty dokumentacji i wygeneruj twardy, ustrukturyzowany raport dla obszaru: {target_tag}.
+
+DANE WEJŚCIOWE (Kontekst z bazy wektorowej):
+{context_text}
 
 INSTRUKCJA:
-Wygeneruj raport w formacie JSON zawierający kluczowe wskaźniki społeczne.
-Skup się na liczbach (liczba wypadków, liczba przeszkolonych osób, % kobiet).
-Jeśli brak danych, wpisz null.
+1. Zwróć dane WYŁĄCZNIE w formacie poprawnego JSON.
+2. Skup się na twardych danych, jednostkach (np. tCO2e, %, liczba osób) i politykach.
+3. Jeśli w danych wejściowych nie ma informacji o danym podpunkcie, wstaw wartość `null`.
+4. POD ŻADNYM POZOREM nie zmyślaj danych. Opieraj się tylko na dostarczonym kontekście.
 
-OCZEKIWANY FORMAT JSON:
+OCZEKIWANA STRUKTURA JSON:
 {{
-  "kategoria": "Social",
-  "bhp": {{
-    "wypadki_ciezkie": 0,
-    "wypadki_lekkie": 0,
-    "wskaznik_wypadkowosci": "opis lub null"
-  }},
-  "pracownicy": {{
-    "szkolenia_godziny": 0,
-    "liczba_przeszkolonych": 0
-  }},
-  "roznorodnosc": {{
-    "kobiety_procent": 0,
-    "zarzad_kobiety_procent": 0
-  }},
-  "spolecznosc": {{
-    "wolontariat_akcje": 0,
-    "skargi_od_mieszkancow": 0
-  }},
-  "podsumowanie": "Krótki opis sytuacji socjalnej."
+  "kategoria": "{target_tag}",
+  "kluczowe_wskazniki": {{}},
+  "polityki_i_procedury": [],
+  "zidentyfikowane_ryzyka": [],
+  "podsumowanie": "Krótkie, jednozdaniowe podsumowanie."
 }}
 """
 
-    try:
-        # 4. Wywołanie OpenAI
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Jesteś analitykiem ESG. Zwracaj tylko czysty JSON."},
-                {"role": "user", "content": social_prompt}
-            ],
-            response_format={"type": "json_object"}  # Wymuszenie formatu JSON
-        )
-
-        analysis_result = response.choices[0].message.content
-
-        # 5. Zapis do bazy
-        save_report(
-            user_id=str(user["id"]),
-            input_text=f"[Social REAL] {report_path}",
-            response_text=analysis_result,
-            report_type="social_analysis"
-        )
-
-        return {
-            "status": "success",
-            "data": analysis_result
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
-
-
-@app.post("/analyze-environmental")
-async def analyze_environmental(
-    report_path: str,
-    user = Depends(get_current_user)
-):
-    """
-    PRODUKCYJNY ENDPOINT ENVIRONMENTAL (E).
-    Wymaga klucza OpenAI API. Analizuje twarde dane liczbowe (CO2, woda, energia).
-    """
-    # 1. Konfiguracja
+    # 6. Wywołanie OpenAI
     openai_client = get_openai_client()
-    if openai_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail="OpenAI API key is missing. Configure .env file."
-        )
-
-    # 2. Walidacja plików
-    report_dir = Path(report_path)
-    if not report_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
-
-    text_file = report_dir / "text.txt"
-    if not text_file.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
-
-    full_text = text_file.read_text(encoding="utf-8")
-
-    # 3. Prompt Systemowy (Environmental)
-    env_prompt = f"""Przeanalizuj poniższy tekst dokumentacji i wyciągnij twarde dane ŚRODOWISKOWE (E).
-Zwróć szczególną uwagę na jednostki (kWh, tCO2e, Mg, m3).
-
-DANE WEJŚCIOWE:
-{full_text[:50000]}
-
-OCZEKIWANY FORMAT JSON:
-{{
-  "kategoria": "Environmental",
-  "emisje_co2": {{
-    "scope_1_wartosc": null,
-    "scope_2_wartosc": null,
-    "scope_3_wartosc": null,
-    "jednostka": "tCO2e"
-  }},
-  "energia": {{
-    "zuzycie_calkowite": null,
-    "jednostka": "kWh",
-    "oze_procent": null
-  }},
-  "woda": {{
-    "zuzycie": null,
-    "jednostka": "m3"
-  }},
-  "odpady": {{
-    "masa_calkowita": null,
-    "jednostka": "Mg",
-    "recykling_procent": null
-  }},
-  "certyfikaty": ["lista znalezionych certyfikatów np. BREEAM"],
-  "podsumowanie": "Krótka ocena wpływu na środowisko."
-}}
-"""
+    if not openai_client:
+        raise HTTPException(status_code=500, detail="Brak klucza API.")
 
     try:
-        # 4. Wywołanie OpenAI
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Jesteś inżynierem środowiska. Zwracaj tylko czysty JSON."},
-                {"role": "user", "content": env_prompt}
+                {"role": "system", "content": "Jesteś analitykiem ESG. Twój jedyny język to poprawny JSON."},
+                {"role": "user", "content": report_prompt}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            timeout=25.0
         )
 
-        analysis_result = response.choices[0].message.content
+        import json
+        raw_ai_response = response.choices[0].message.content
+        report_json = json.loads(raw_ai_response)
 
-        # 5. Zapis do bazy
-        save_report(
-            user_id=str(user["id"]),
-            input_text=f"[Environmental REAL] {report_path}",
-            response_text=analysis_result,
-            report_type="environmental_analysis"
-        )
-
-        return {
-            "status": "success",
-            "data": analysis_result
-        }
-
+    except openai.APITimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout (504): Serwer AI nie wygenerował raportu w czasie.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Błąd generowania raportu: {str(e)}")
 
-@app.post("/analyze-governance")
-async def analyze_governance(
-    report_path: str,
-    user = Depends(get_current_user)
-):
-    """
-    PRODUKCYJNY ENDPOINT GOVERNANCE (G).
-    Wymaga klucza OpenAI API. Analizuje dokumenty pod kątem ładu korporacyjnego.
-    """
-    # 1. Konfiguracja klienta OpenAI
-    openai_client = get_openai_client()
-    if openai_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail="OpenAI API key is missing. Configure .env file."
-        )
-
-    # 2. Walidacja ścieżki
-    report_dir = Path(report_path)
-    if not report_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Directory not found: {report_path}")
-
-    text_file = report_dir / "text.txt"
-    if not text_file.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {text_file}")
-
-    full_text = text_file.read_text(encoding="utf-8")
-
-    # 3. Prompt systemowy Governance
-    gov_prompt = f"""Przeanalizuj poniższy tekst i wyciągnij informacje dotyczące kategorii GOVERNANCE (G).
-Skup się na strukturze zarządczej, etyce, ryzykach, politykach wewnętrznych oraz zgodności z przepisami.
-
-DANE WEJŚCIOWE:
-{full_text[:50000]}
-
-INSTRUKCJA:
-Zwróć dane w formacie JSON. Jeśli informacji brakuje, wstaw null.
-Koncentruj się na danych, a nie na interpretacjach.
-
-OCZEKIWANY FORMAT JSON:
-{{
-  "kategoria": "Governance",
-  "struktura_zarzadzania": {{
-    "liczba_czlonkow_zarzadu": null,
-    "komitety": ["np. komitet audytu, komitet ds. ryzyka"],
-    "niezalezni_czlonkowie_procent": null
-  }},
-  "polityki": {{
-    "polityka_antykorupcyjna": null,
-    "kodeks_etyki": null,
-    "polityka_zakupowa": null,
-    "polityka_whistleblowing": null
-  }},
-  "ryzyka_i_kontrola": {{
-    "zidentyfikowane_ryzyka": ["lista ryzyk"],
-    "system_kontroli_wewnetrznej": null,
-    "procedury_nadzoru_nad_podwykonawcami": null
-  }},
-  "zgodnosc": {{
-    "naruszenia_prawne": null,
-    "kary_finansowe": null,
-    "certyfikaty_zarzadcze": ["np. ISO 37001"]
-  }},
-  "transparentnosc": {{
-    "raportowanie_esg": null,
-    "ujawnienia_finansowe": null,
-    "polityka_komunikacji": null
-  }},
-  "podsumowanie": "Krótka ocena ładu korporacyjnego."
-}}
-"""
-
+    # 7. Zapis do bazy
     try:
-        # 4. Wywołanie OpenAI
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Jesteś ekspertem ds. ładu korporacyjnego. Zwracaj tylko czysty JSON."},
-                {"role": "user", "content": gov_prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
-
-        analysis_result = response.choices[0].message.content
-
-        # 5. Zapis do bazy
         save_report(
-            user_id=str(user["id"]),
-            input_text=f"[Governance REAL] {report_path}",
-            response_text=analysis_result,
-            report_type="governance_analysis"
+            user_id=user_id,
+            input_text=f"Generowanie raportu: {target_tag}",
+            response_text=raw_ai_response,
+            report_type="unified_esg_report"
         )
-
-        return {
-            "status": "success",
-            "data": analysis_result
-        }
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+        logging.warning(f"Nie udało się zapisać raportu do bazy: {e}")
 
-# ======= ENDPOINT BAZY WIEDZY ========
-# Importujemy serwis (upewnij się, że ścieżka importu jest poprawna dla twojej struktury folderów)
-try:
-    from backend.services.knowledge_service import add_document_to_knowledge_base
-except ImportError:
-    from database.knowledge_service import add_document_to_knowledge_base
-
-
+    return {
+        "status": "success",
+        "mode": "report_generation",
+        "kategoria": target_tag,
+        "rag_used": True,
+        "data": report_json
+    }
+# ====================
 
 @app.post("/knowledge/upload")
 async def upload_knowledge_files(
@@ -1063,9 +877,12 @@ async def ask_chat(request: ChatRequest):
 
     # --- KROK 1: RETRIEVAL ---
     found_chunks = await retrieve_context_async(
-        query=final_query,
-        match_count=5,
-        filter_tag=search_tag
+        query=search_query,
+        user_id=user_id,  # <--- KRYTYCZNE: Baza musi szukać tylko w plikach tego użytkownika
+        match_count=20,  # <-- Zwiększamy liczbę fragmentów, żeby złapać szerszy kontekst
+        match_threshold=0.25,
+        # Drastyczne obniżenie progu tylko dla raportów (Zgarnianie danych szeroką siecią)
+        filter_tag=db_filter_tag
     )
 
     # --- KROK 2: PROMPT BUILDING & FALLBACK ---
