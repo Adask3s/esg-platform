@@ -45,6 +45,7 @@ async def retrieve_context_async(
         "match_count": match_count,
         # Current SQL signature supports `filter_tag`; keep it None unless provided.
         "filter_tag": filter_tag,
+        "query_user_id": user_id,  # <--- Przekazanie tożsamości do bazy
     }
 
     # 3) Call Supabase RPC
