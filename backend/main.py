@@ -987,7 +987,7 @@ class DeleteUserDocumentRequest(BaseModel):
     document_id: str
 
 
-@app.post("/user/documents/delete", tags=["user-documents"])
+@app.post("/user/documents/delete")
 def delete_user_document_endpoint(
     body: DeleteUserDocumentRequest,
     user=Depends(get_current_user),
