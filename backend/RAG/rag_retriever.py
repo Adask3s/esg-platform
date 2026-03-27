@@ -57,14 +57,18 @@ async def retrieve_context_async(
 
     data: List[Dict[str, Any]] = getattr(response, "data", None) or []
 
-    # 4) Sort by similarity desc and return only chunk_text
-    # Expected item keys: chunk_id, chunk_text, tag, source, similarity
+    # 4) Sort by similarity desc and return chunk_text WITH source metadata
     sorted_items = sorted(
         data,
         key=lambda item: float(item.get("similarity", 0.0)),
         reverse=True,
     )
-    return [str(item.get("chunk_text", "")) for item in sorted_items if item.get("chunk_text")]
+
+    # KRYTYCZNA ZMIANA: Doklejamy nazwę pliku, żeby AI wiedziało co czyta
+    return [
+        f"--- DOKUMENT: {item.get('source', 'Nieznane_zrodlo')} ---\n{item.get('chunk_text', '')}"
+        for item in sorted_items if item.get("chunk_text")
+    ]
 
 def retrieve_context(
     query: str,
