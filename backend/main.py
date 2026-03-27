@@ -483,17 +483,28 @@ async def generate_report(request: ReportRequest, user=Depends(get_current_user)
 
     user_id = str(user['id'])
 
-    # 2. Logika Tagów (Jeśli brak tagu -> wymuszamy ogólne ESG)
+    # 1. Ustalenie kontekstu zapytania (Tagu)
     target_tag = request.tag.strip() if request.tag and request.tag.strip() else "ESG"
     db_filter_tag = request.tag if request.tag and request.tag.strip() else None
 
-    search_query = f"Kluczowe wskaźniki, twarde dane liczbowe, polityki i statystyki dla obszaru: {target_tag}"
+    # TWARDA ZMIANA: Dynamiczne zapytania do bazy wektorowej napakowane słowami-kluczami,
+    # które fizycznie występują w PDF-ach firm, a rzadziej w ustawach.
+    vector_queries = {
+        "Environmental": "emisje CO2, tCO2e, zużycie energii, MWh, megawatogodziny, recykling, woda, ślad węglowy, panele fotowoltaiczne, odpady",
+        "Social": "liczba pracowników, szkolenia, kobiety, mężczyźni, wypadki, BHP, bezpieczeństwo, rotacja, wolontariat, społeczność",
+        "Governance": "zarząd, audyty, korupcja, whistleblowing, kary finansowe, rada nadzorcza, etyka, polityka, zgodność compliance",
+        "ESG": "emisje tCO2e, zużycie energii MWh, recykling, liczba pracowników, szkolenia BHP, zarząd, audyty, kary finansowe, whistleblowing"
+    }
 
-    # 3. Retrieval - pobranie z bazy wektorowej (Przekazujemy user_id do filtra!)
+    # Wybieramy słowa-klucze dla wektorów w zależności od tagu
+    search_query = vector_queries.get(target_tag, vector_queries["ESG"])
+
+    # 2. Retrieval - pobranie z bazy wektorowej
     found_chunks = await retrieve_context_async(
         query=search_query,
-        user_id=user_id,  # <--- KRYTYCZNE: Baza musi szukać tylko w plikach tego użytkownika
-        match_count=15,
+        user_id=user_id,
+        match_count=35,       # ZWIĘKSZONO: Łapiemy więcej, żeby ustawy nie wypchnęły raportów firmy
+        match_threshold=0.20, # OBNIŻONO: Większa szansa na złapanie prostych zdań z danymi
         filter_tag=db_filter_tag
     )
 
@@ -506,27 +517,61 @@ async def generate_report(request: ReportRequest, user=Depends(get_current_user)
             "data": None
         }
 
-    # 5. Dynamiczny Prompt wymuszający format JSON
-    context_text = "\n\n".join([f"[Fragment {i + 1}]: {chunk}" for i, chunk in enumerate(found_chunks)])
+    # 5. FIZYCZNY PODZIAŁ ŹRÓDEŁ (Separacja wiedzy prawnej od danych firmy)
+    user_chunks = []
+    kb_chunks = []
 
-    report_prompt = f"""Przeanalizuj poniższe fragmenty dokumentacji i wygeneruj twardy, ustrukturyzowany raport dla obszaru: {target_tag}.
+    for chunk in found_chunks:
+        # Rozdzielamy prawo unijne od raportów firmy na podstawie etykiety wklejonej w rag_retriever
+        if "CELEX" in chunk or "Rozporządzenie" in chunk or "Dyrektywa" in chunk:
+            kb_chunks.append(chunk)
+        else:
+            user_chunks.append(chunk)
 
-DANE WEJŚCIOWE (Kontekst z bazy wektorowej):
-{context_text}
+    user_context = "\n\n".join(user_chunks) if user_chunks else "Brak danych z raportów firmy."
+    kb_context = "\n\n".join(kb_chunks) if kb_chunks else "Brak danych prawnych z bazy wiedzy."
 
-INSTRUKCJA:
-1. Zwróć dane WYŁĄCZNIE w formacie poprawnego JSON.
-2. Skup się na twardych danych, jednostkach (np. tCO2e, %, liczba osób) i politykach.
-3. Jeśli w danych wejściowych nie ma informacji o danym podpunkcie, wstaw wartość `null`.
-4. POD ŻADNYM POZOREM nie zmyślaj danych. Opieraj się tylko na dostarczonym kontekście.
+    # Dynamiczne wskazówki merytoryczne zależne od Tagu
+    tag_hints = {
+        "Environmental": "Szukaj twardych danych o: emisjach gazów (Scope 1, 2, 3), zużyciu energii, wodzie, odpadach, recyklingu i śladzie węglowym.",
+        "Social": "Szukaj twardych danych o: liczbie pracowników, udziale kobiet/mężczyzn, wypadkach przy pracy (BHP), rotacji kadr i godzinach szkoleń.",
+        "Governance": "Szukaj twardych danych o: strukturze zarządu (niezależność), liczbie audytów, zgłoszeniach naruszeń (whistleblowing) i karach finansowych.",
+        "ESG": "Szukaj kluczowych, twardych danych z każdego filaru: środowiska (np. emisje), społeczeństwa (np. pracownicy) i ładu korporacyjnego (np. audyty)."
+    }
 
-OCZEKIWANA STRUKTURA JSON:
+    current_hint = tag_hints.get(target_tag, tag_hints["ESG"])
+
+    # POTĘŻNY PROMPT (Zintegrowana Twoja logika i fizyczny podział na Zbiór 1 i Zbiór 2)
+    report_prompt = f"""Jesteś bezlitosnym audytorem danych ESG. Twoim jedynym celem jest ekstrakcja TWARDYCH WYNIKÓW LICZBOWYCH konkretnej firmy dla obszaru: {target_tag}.
+
+Masz przed sobą dwa całkowicie niezależne, fizycznie oddzielone zbiory danych:
+
+=== ZBIÓR 1: DOKUMENTY FIRMY (TWOJE JEDYNE ŹRÓDŁO WSKAŹNIKÓW) ===
+{user_context}
+
+=== ZBIÓR 2: BAZA WIEDZY / PRAWO UE (TYLKO DO REFERENCJI PRAWNEJ) ===
+{kb_context}
+
+INSTRUKCJE KRYTYCZNE (ZŁAM JEDNĄ, A OBLEJESZ):
+1. TWARDY PODZIAŁ ŹRÓDEŁ: Tablice "wskazniki_liczbowe", "wdrozone_polityki_i_dzialania" oraz "zidentyfikowane_ryzyka" MUSISZ wypełniać WYŁĄCZNIE danymi ze [ZBIORU 1] (Dokumenty Firmy). 
+2. ŚLEPOTA NA ZBIÓR 2: CAŁKOWICIE IGNORUJ wszelkie liczby, wskaźniki, żargon i przykłady ze [ZBIORU 2] przy wypełnianiu tablic. To jest tylko tło prawne. Służy Ci ono tylko do napisania sekcji "wnioski_i_zgodnosc_prawna".
+3. ZAKAZ TWORZENIA PUSTYCH WSKAŹNIKÓW (BEZWZGLĘDNY): W tablicy "wskazniki_liczbowe" mogą znaleźć się TYLKO te wskaźniki, dla których w [ZBIORZE 1] występuje KONKRETNA LICZBA (np. 450, 850, 12%). 
+4. ZERO NULLI: Zabraniam używania wartości "null". Jeśli nie znasz dokładnej wartości ze ZBIORU 1, w ogóle nie dodawaj tego wskaźnika do JSON-a. Jeśli w ZBIORZE 1 nie ma twardych liczb, po prostu zostaw tablicę pustą [].
+5. SPECJALIZACJA: {current_hint}
+
+OCZEKIWANA, ŚCISŁA STRUKTURA JSON (Zastąp tagi <...> faktycznymi danymi z tekstu):
 {{
   "kategoria": "{target_tag}",
-  "kluczowe_wskazniki": {{}},
-  "polityki_i_procedury": [],
-  "zidentyfikowane_ryzyka": [],
-  "podsumowanie": "Krótkie, jednozdaniowe podsumowanie."
+  "wskazniki_liczbowe": [
+     {{"nazwa": "<Krótka nazwa znalezionego wskaźnika>", "wartosc": <Tylko_liczba_bez_stringów>, "jednostka": "<np. tCO2e, %, MWh>"}}
+  ],
+  "wdrozone_polityki_i_dzialania": [
+     "<Zidentyfikowane działanie firmy 1 ze ZBIORU 1>"
+  ],
+  "zidentyfikowane_ryzyka": [
+     "<Zidentyfikowane ryzyko dla firmy ze ZBIORU 1>"
+  ],
+  "wnioski_i_zgodnosc_prawna": "<1-2 zdania oceniające wyniki firmy. Tutaj i TYLKO TUTAJ możesz odnieść się do tego, czy wyniki firmy ze ZBIORU 1 pasują do wymogów prawnych ze ZBIORU 2.>"
 }}
 """
 
@@ -862,12 +907,17 @@ async def ask_chat(request: ChatRequest):
     Czysty endpoint czatu Q&A.
     Służy wyłącznie do odpowiadania na pytania użytkownika na podstawie bazy wektorowej.
     """
+    # Twarda autoryzacja, żeby RAG miał z czego wziąć user_id
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+
+    user_id = str(user['id'])
 
     # 1. TWARDA WALIDACJA PYTANIA
     if not request.query or not request.query.strip():
         raise HTTPException(
             status_code=400,
-            detail="Pytanie nie może być puste. Aby wygenerować raport, użyj dedykowanego endpointu."
+            detail="Pytanie nie może być puste."
         )
 
     final_query = request.query.strip()
