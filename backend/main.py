@@ -20,11 +20,71 @@ from database.user_documents_deleting import delete_user_document_cascade
 # Celery imports (support both package and script-run modes)
 try:
     from backend.celery.celery_app import celery_app
-    from backend.celery.tasks import parse_and_store, parse_and_store_to_knowledge
+    from backend.celery.tasks import (
+        parse_and_store,
+        parse_and_store_to_knowledge,
+        process_user_document,
+        process_knowledge_document_full,
+        ingest_chunk_file_task,
+        ingest_chunk_url_task,
+    )
+    from backend.celery.report_tasks import generate_report_task
 except ImportError:
     from backend.celery.celery_app import celery_app  # type: ignore
-    from backend.celery.tasks import parse_and_store, parse_and_store_to_knowledge  # type: ignore
+    from backend.celery.tasks import (  # type: ignore
+        parse_and_store,
+        parse_and_store_to_knowledge,
+        process_user_document,
+        process_knowledge_document_full,
+        ingest_chunk_file_task,
+        ingest_chunk_url_task,
+    )
+    from backend.celery.report_tasks import generate_report_task  # type: ignore
 from celery.result import AsyncResult
+
+# Redis client do rejestrowania właściciela tasków (ownership check w /status)
+import redis as _redis
+
+_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+try:
+    _redis_client = _redis.Redis.from_url(_REDIS_URL, decode_responses=True)
+except Exception:
+    _redis_client = None
+
+
+def _register_task_owner(task_id: str, user_id: str, ttl_seconds: int = 86400) -> None:
+    """Zapisz w Redis właściciela taska (dla ownership-check w /status)."""
+    if _redis_client is None or not task_id or not user_id:
+        return
+    try:
+        _redis_client.set(f"task:{task_id}:owner", str(user_id), ex=ttl_seconds)
+    except Exception:
+        pass
+
+
+def _check_task_owner(task_id: str, user_id: str) -> bool:
+    """True jeśli task nie ma właściciela (legacy) lub należy do user_id."""
+    if _redis_client is None:
+        return True
+    try:
+        owner = _redis_client.get(f"task:{task_id}:owner")
+    except Exception:
+        return True
+    if owner is None:
+        return True
+    return str(owner) == str(user_id)
+
+
+def _rel_task_path(tmp_path: Path, tmp_root: Path) -> str:
+    """Zwraca ścieżkę relatywną do tmp_root z ukośnikami POSIX.
+    Celery worker w Dockerze rekonstruuje pełną ścieżkę przez WORKER_TMP_ROOT.
+    """
+    try:
+        return tmp_path.relative_to(tmp_root).as_posix()
+    except ValueError:
+        # Fallback gdy ścieżki nie są w relacji (nie powinno się zdarzać)
+        return tmp_path.as_posix()
+
 
 # Router embeddingów (ZADANIE 2)
 try:
@@ -136,11 +196,10 @@ async def parse_upload(
     file: UploadFile | None = File(None),
     user = Depends(get_current_user),
 ):
-    """Upload one or many files, parse server-side, and write results into output_test_parser/.
-    - Accepts either multiple `files` or single `file` for backward/simple usage.
-    - Enforces: max 10 files, max 50MB each.
+    """Upload jednego lub wielu plików. Parsowanie odbywa się ASYNCHRONICZNIE przez Celery.
+    Zwraca task_id(y) — status pobierasz przez GET /status/{task_id}.
+    Limity: max 10 plików, max 50MB każdy.
     """
-    # Zbierz wejście w listę
     incoming: list[UploadFile] = []
     if files:
         incoming.extend(files)
@@ -153,129 +212,76 @@ async def parse_upload(
     if len(incoming) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"Too many files. Max allowed: {MAX_FILES}")
 
-    dispatcher = ParserDispatcher()
-    project_root = Path(__file__).resolve().parents[1]
-    out_root = project_root / "output_test_parser"
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
 
-    # Jeśli tylko jeden plik — zachowaj dotychczasowy format odpowiedzi
-    if len(incoming) == 1:
-        f = incoming[0]
-        tmp_dir = tempfile.mkdtemp(prefix="upload_")
-        tmp_path = Path(tmp_dir) / f.filename
-        try:
-            data = await f.read()
-            if len(data) > MAX_FILE_SIZE:
-                raise HTTPException(status_code=413, detail=f"File '{f.filename}' exceeds 50MB limit")
-            tmp_path.write_bytes(data)
-
-            result = dispatcher.parse(tmp_path)
-            manifest = write_result(result, out_root)
-            try:
-                save_report(
-                    user_id=str(user["id"]),
-                    input_text=str(f.filename),
-                    response_text="Plik przetworzony pomyślnie",
-                    report_type="parse_result",
-                )
-            except Exception:
-                # Nie zrywaj odpowiedzi API, jeśli DB chwilowo niedostępna
-                pass
-
-            return {"status": "ok", "manifest": manifest}
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        finally:
-            try:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-            except Exception:
-                pass
-
-    # Wiele plików — agreguj wyniki per plik
-    results = []
+    enqueued = []
     for f in incoming:
-        tmp_dir = tempfile.mkdtemp(prefix="upload_")
-        tmp_path = Path(tmp_dir) / f.filename
-        item = {"filename": f.filename}
+        safe_name = sanitize_filename(f.filename or "file")
+        tmp_dir = tempfile.mkdtemp(prefix="upload_", dir=str(tmp_root))
+        tmp_path = Path(tmp_dir) / safe_name
+
         try:
-            data = await f.read()
-            if len(data) > MAX_FILE_SIZE:
-                item["status"] = "error"
-                item["error"] = "File exceeds 50MB limit"
-                results.append(item)
+            written = await save_upload_streamed(f, tmp_path)
+            if written > MAX_FILE_SIZE:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                enqueued.append({
+                    "filename": safe_name,
+                    "status": "error",
+                    "error": f"File '{safe_name}' exceeds 50MB limit",
+                })
                 continue
 
-            tmp_path.write_bytes(data)
-            result = dispatcher.parse(tmp_path)
-            manifest = write_result(result, out_root)
-
-            # DB
-            try:
-                report_id = save_report(
-                    user_id=str(user["id"]),
-                    input_text=str(f.filename),
-                    response_text="Plik przetworzony pomyślnie",
-                    report_type="parse_result",
-                )
-                item["report_id"] = report_id
-            except Exception:
-                pass
-
-            item["status"] = "ok"
-            item["manifest"] = manifest
+            async_result = parse_and_store.delay(_rel_task_path(tmp_path, tmp_root), safe_name, str(user["id"]))
+            _register_task_owner(async_result.id, str(user["id"]))
+            enqueued.append({
+                "filename": safe_name,
+                "status": "queued",
+                "task_id": async_result.id,
+            })
         except Exception as e:
-            item["status"] = "error"
-            item["error"] = str(e)
-        finally:
-            try:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-            except Exception:
-                pass
-            results.append(item)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            enqueued.append({"filename": safe_name, "status": "error", "error": str(e)})
 
-    return {"status": "ok", "count": len(results), "results": results}
+    # Jeśli tylko jeden plik — uprość odpowiedź (BC z poprzednim kontraktem, ale asynchronicznie).
+    if len(enqueued) == 1:
+        only = enqueued[0]
+        if only.get("status") == "queued":
+            return {"status": "queued", "task_id": only["task_id"], "filename": only["filename"]}
+        return {"status": "error", "filename": only.get("filename"), "error": only.get("error")}
+
+    return {"status": "queued", "count": len(enqueued), "results": enqueued}
 
 # Ingestion endpoints: scraping + keyword filtering + chunking
 
 @app.post("/ingest/chunk/url")
-async def ingest_chunk_url(body: IngestUrlRequest = Body(...)):
+async def ingest_chunk_url(
+    body: IngestUrlRequest = Body(...),
+    user = Depends(get_current_user),
+):
     """
-    Pobiera stronę WWW (HTML), czyści do tekstu, następnie filtruje wg słów kluczowych
-    i dzieli na fragmenty (chunking) z overlapem. Zwraca listę chunków.
+    Asynchronicznie: pobiera stronę WWW, filtruje wg słów kluczowych i chunkuje.
+    Zwraca task_id; pełny wynik (IngestResponse) pobierasz przez GET /status/{task_id}.
     """
-    try:
-        blocks = fetch_url_text_blocks(body.url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Fetch error: {e}")
-
-    kcfg, ccfg = body.to_configs()
-    # jeśli brak keywordów -> weź całe bloki
-    if body.keywords:
-        filtered_blocks, kept = keyword_filter_blocks(blocks, kcfg)
-    else:
-        filtered_blocks, kept = blocks, list(range(len(blocks)))
-
-    # Połącz i ponownie pocięte zgodnie z regułami chunkera
-    joined = "\n\n".join(filtered_blocks)
-    chunks_models = chunk_text(joined, ccfg)
-
-    resp = IngestResponse(
-        source_type=SourceType.url,
-        source=body.url,
-        total_blocks=len(blocks),
-        chunks=chunks_models,
-        notes=(
-            "Brak dopasowań dla słów kluczowych" if body.keywords and not filtered_blocks else None
-        ),
+    async_result = ingest_chunk_url_task.delay(
+        body.url,
+        body.keywords or None,
+        getattr(body, "case_sensitive", False),
+        getattr(body, "match_all", False),
+        getattr(body, "context_before", 0),
+        getattr(body, "context_after", 0),
+        getattr(body, "target_tokens", 750),
+        getattr(body, "min_tokens", 400),
+        getattr(body, "max_tokens", 1200),
+        getattr(body, "overlap_tokens", 80),
     )
-    return resp
+    _register_task_owner(async_result.id, str(user["id"]))
+    return {"task_id": async_result.id, "status": "queued"}
 
 
 @app.post("/ingest/chunk/file")
 async def ingest_chunk_file(
     file: UploadFile = File(...),
-    # prosty, elastyczny input z formularza (opcjonalny)
     keywords: str | None = Form(None, description="Słowa kluczowe rozdzielone przecinkami"),
     case_sensitive: bool = Form(False),
     match_all: bool = Form(False),
@@ -285,72 +291,47 @@ async def ingest_chunk_file(
     min_tokens: int = Form(400),
     max_tokens: int = Form(1200),
     overlap_tokens: int = Form(80),
+    user = Depends(get_current_user),
 ):
-    dispatcher = ParserDispatcher()
+    """
+    Asynchronicznie: parsuje plik, filtruje wg słów kluczowych, chunkuje.
+    Zwraca task_id; wynik IngestResponse pobierasz przez GET /status/{task_id}.
+    """
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="ingest_", dir=str(tmp_root))
+    safe_name = sanitize_filename(file.filename or "upload.bin")
+    tmp_path = Path(tmp_dir) / safe_name
 
-    # Zapis tymczasowy pliku i parsowanie istniejącym modułem
-    tmp_dir = tempfile.mkdtemp(prefix="ingest_")
-    tmp_path = Path(tmp_dir) / (file.filename or "upload.bin")
     try:
-        data = await file.read()
-        if len(data) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds 50MB limit")
-        tmp_path.write_bytes(data)
+        written = await save_upload_streamed(file, tmp_path)
+        if written > MAX_FILE_SIZE:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(status_code=413, detail=f"File '{safe_name}' exceeds 50MB limit")
 
-        parsed = dispatcher.parse(tmp_path)
-        text = parsed.text or ""
-        if not text and parsed.pages:
-            text = "\n\n".join(parsed.pages)
-        if not text:
-            raise HTTPException(status_code=400, detail="Brak tekstu do przetworzenia z pliku")
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else None
 
-        blocks = make_blocks(text)
-
-        kw_list = []
-        if keywords:
-            kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
-
-        kcfg = KeywordFilterConfig(
-            keywords=kw_list,
-            case_sensitive=case_sensitive,
-            match_all=match_all,
-            context_before=context_before,
-            context_after=context_after,
+        async_result = ingest_chunk_file_task.delay(
+            _rel_task_path(tmp_path, tmp_root),
+            safe_name,
+            kw_list,
+            case_sensitive,
+            match_all,
+            context_before,
+            context_after,
+            target_tokens,
+            min_tokens,
+            max_tokens,
+            overlap_tokens,
         )
-        ccfg = ChunkConfig(
-            target_tokens=target_tokens,
-            min_tokens=min_tokens,
-            max_tokens=max_tokens,
-            overlap_tokens=overlap_tokens,
-        )
-
-        if kw_list:
-            filtered_blocks, kept = keyword_filter_blocks(blocks, kcfg)
-        else:
-            filtered_blocks, kept = blocks, list(range(len(blocks)))
-
-        joined = "\n\n".join(filtered_blocks)
-        chunks_models = chunk_text(joined, ccfg)
-
-        resp = IngestResponse(
-            source_type=SourceType.file,
-            source=str(file.filename),
-            total_blocks=len(blocks),
-            chunks=chunks_models,
-            notes=(
-                "Brak dopasowań dla słów kluczowych" if kw_list and not filtered_blocks else None
-            ),
-        )
-        return resp
+        _register_task_owner(async_result.id, str(user["id"]))
+        return {"task_id": async_result.id, "status": "queued", "filename": safe_name}
     except HTTPException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
     except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        try:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
 
 
 @app.get("/openai-status")
@@ -426,39 +407,92 @@ async def process_file(
 
     validate_file_on_disk(tmp_path, safe_name)
 
-    async_result = parse_and_store.delay(str(tmp_path), safe_name, str(user["id"]))
+    async_result = parse_and_store.delay(_rel_task_path(tmp_path, tmp_root), safe_name, str(user["id"]))
     return {"task_id": async_result.id, "status": "queued"}
 
 
 @app.get("/status/{task_id}")
 def get_status(
     task_id: str,
-    user = Depends(get_current_user)
+    user = Depends(get_current_user),
 ):
-    """Zwraca status zadania Celery i metadane postepu.
-    - PENDING/RECEIVED/STARTED/PROGRESS/SUCCESS/FAILURE
-    - meta: np. {step: "parsing"}
+    """Zwraca rozbudowany status zadania Celery.
+
+    Schemat odpowiedzi:
+    {
+        "task_id": "...",
+        "state": "PENDING|STARTED|PROGRESS|RETRY|SUCCESS|FAILURE",
+        "progress": 0-100,
+        "stage": "parsing",
+        "stage_pl": "Parsowanie pliku",
+        "filename": "raport.pdf",
+        "attempts": 1,
+        "result": {...} | null,
+        "error": {"type": "...", "message": "...", "retryable": false} | null,
+        "updated_at": "2026-04-16T12:00:00Z"
+    }
     """
+    from datetime import datetime, timezone
+
+    # Opcjonalny ownership check
+    if not _check_task_owner(task_id, str(user["id"])):
+        raise HTTPException(status_code=403, detail="Brak dostępu do tego zadania.")
+
     res = AsyncResult(task_id, app=celery_app)
-    payload = {
+    now = datetime.now(timezone.utc).isoformat()
+
+    payload: dict = {
         "task_id": task_id,
         "state": res.state,
+        "progress": 0,
+        "stage": None,
+        "stage_pl": None,
+        "filename": None,
+        "attempts": 1,
+        "result": None,
+        "error": None,
+        "updated_at": now,
     }
-    # W trakcie: meta
+
     if res.state in {"PENDING", "RECEIVED", "STARTED", "PROGRESS", "RETRY"}:
-        info = res.info if isinstance(res.info, dict) else None
-        if info:
-            payload["meta"] = info
+        info = res.info if isinstance(res.info, dict) else {}
+        payload.update({
+            "progress": info.get("progress", 0),
+            "stage": info.get("step"),
+            "stage_pl": info.get("stage_pl"),
+            "filename": info.get("filename"),
+            "attempts": info.get("attempts", 1 + (res.info or {}).get("retries", 0)
+                                 if isinstance(res.info, dict) else 1),
+        })
+        if res.state == "RETRY" and isinstance(res.info, dict):
+            payload["error"] = {
+                "type": info.get("exc_type", "RetryError"),
+                "message": info.get("exc_message", str(res.info)),
+                "retryable": True,
+            }
         return payload
-    
-    # Sukces: pelny wynik
+
     if res.state == "SUCCESS":
+        payload["progress"] = 100
+        payload["stage_pl"] = "Gotowe"
         payload["result"] = res.result
         return payload
 
     if res.state == "FAILURE":
-        payload["error"] = str(res.info)
+        exc = res.result  # wyjątek (instancja lub str)
+        exc_type = type(exc).__name__ if exc and not isinstance(exc, str) else "Error"
+        exc_msg = str(exc)
+        # Stałe nieretryowalne typy
+        non_retryable = {"ValueError", "FileNotFoundError", "AuthenticationError",
+                         "BadRequestError", "json.JSONDecodeError"}
+        payload["error"] = {
+            "type": exc_type,
+            "message": exc_msg,
+            "retryable": exc_type not in non_retryable,
+        }
         return payload
+
+    return payload
 
 
 # ESG Analysis Endpoints
@@ -474,150 +508,20 @@ class ReportRequest(BaseModel):
 @app.post("/report/generate")
 async def generate_report(request: ReportRequest, user=Depends(get_current_user)):
     """
-    Zunifikowany endpoint do generowania ustrukturyzowanych raportów ESG (JSON).
-    Wymaga zalogowanego użytkownika. Szuka danych w bazie wektorowej przypisanych do tego usera.
+    Asynchroniczne generowanie raportu ESG przez Celery.
+    Zwraca task_id; pełny raport JSON pobierasz przez GET /status/{task_id} (pole "result").
     """
-    # 1. Twarda autoryzacja
     if not user or 'id' not in user:
         raise HTTPException(status_code=401, detail="Brak autoryzacji. Musisz być zalogowany.")
 
     user_id = str(user['id'])
-
-    # 1. Ustalenie kontekstu zapytania (Tagu)
-    target_tag = request.tag.strip() if request.tag and request.tag.strip() else "ESG"
-    db_filter_tag = request.tag if request.tag and request.tag.strip() else None
-
-    # TWARDA ZMIANA: Dynamiczne zapytania do bazy wektorowej napakowane słowami-kluczami,
-    # które fizycznie występują w PDF-ach firm, a rzadziej w ustawach.
-    vector_queries = {
-        "Environmental": "emisje CO2, tCO2e, zużycie energii, MWh, megawatogodziny, recykling, woda, ślad węglowy, panele fotowoltaiczne, odpady",
-        "Social": "liczba pracowników, szkolenia, kobiety, mężczyźni, wypadki, BHP, bezpieczeństwo, rotacja, wolontariat, społeczność",
-        "Governance": "zarząd, audyty, korupcja, whistleblowing, kary finansowe, rada nadzorcza, etyka, polityka, zgodność compliance",
-        "ESG": "emisje tCO2e, zużycie energii MWh, recykling, liczba pracowników, szkolenia BHP, zarząd, audyty, kary finansowe, whistleblowing"
-    }
-
-    # Wybieramy słowa-klucze dla wektorów w zależności od tagu
-    search_query = vector_queries.get(target_tag, vector_queries["ESG"])
-
-    # 2. Retrieval - pobranie z bazy wektorowej
-    found_chunks = await retrieve_context_async(
-        query=search_query,
-        user_id=user_id,
-        match_count=35,       # ZWIĘKSZONO: Łapiemy więcej, żeby ustawy nie wypchnęły raportów firmy
-        match_threshold=0.20, # OBNIŻONO: Większa szansa na złapanie prostych zdań z danymi
-        filter_tag=db_filter_tag
-    )
-
-    # 4. Obsługa braku danych
-    if not found_chunks:
-        return {
-            "status": "partial_success",
-            "kategoria": target_tag,
-            "message": "⚠️ Brak danych w dokumentach źródłowych dla tego obszaru.",
-            "data": None
-        }
-
-    # 5. FIZYCZNY PODZIAŁ ŹRÓDEŁ (Separacja wiedzy prawnej od danych firmy)
-    user_chunks = []
-    kb_chunks = []
-
-    for chunk in found_chunks:
-        # Rozdzielamy prawo unijne od raportów firmy na podstawie etykiety wklejonej w rag_retriever
-        if "CELEX" in chunk or "Rozporządzenie" in chunk or "Dyrektywa" in chunk:
-            kb_chunks.append(chunk)
-        else:
-            user_chunks.append(chunk)
-
-    user_context = "\n\n".join(user_chunks) if user_chunks else "Brak danych z raportów firmy."
-    kb_context = "\n\n".join(kb_chunks) if kb_chunks else "Brak danych prawnych z bazy wiedzy."
-
-    # Dynamiczne wskazówki merytoryczne zależne od Tagu
-    tag_hints = {
-        "Environmental": "Szukaj twardych danych o: emisjach gazów (Scope 1, 2, 3), zużyciu energii, wodzie, odpadach, recyklingu i śladzie węglowym.",
-        "Social": "Szukaj twardych danych o: liczbie pracowników, udziale kobiet/mężczyzn, wypadkach przy pracy (BHP), rotacji kadr i godzinach szkoleń.",
-        "Governance": "Szukaj twardych danych o: strukturze zarządu (niezależność), liczbie audytów, zgłoszeniach naruszeń (whistleblowing) i karach finansowych.",
-        "ESG": "Szukaj kluczowych, twardych danych z każdego filaru: środowiska (np. emisje), społeczeństwa (np. pracownicy) i ładu korporacyjnego (np. audyty)."
-    }
-
-    current_hint = tag_hints.get(target_tag, tag_hints["ESG"])
-
-    # POTĘŻNY PROMPT (Zintegrowana Twoja logika i fizyczny podział na Zbiór 1 i Zbiór 2)
-    report_prompt = f"""Jesteś bezlitosnym audytorem danych ESG. Twoim jedynym celem jest ekstrakcja TWARDYCH WYNIKÓW LICZBOWYCH konkretnej firmy dla obszaru: {target_tag}.
-
-Masz przed sobą dwa całkowicie niezależne, fizycznie oddzielone zbiory danych:
-
-=== ZBIÓR 1: DOKUMENTY FIRMY (TWOJE JEDYNE ŹRÓDŁO WSKAŹNIKÓW) ===
-{user_context}
-
-=== ZBIÓR 2: BAZA WIEDZY / PRAWO UE (TYLKO DO REFERENCJI PRAWNEJ) ===
-{kb_context}
-
-INSTRUKCJE KRYTYCZNE (ZŁAM JEDNĄ, A OBLEJESZ):
-1. TWARDY PODZIAŁ ŹRÓDEŁ: Tablice "wskazniki_liczbowe", "wdrozone_polityki_i_dzialania" oraz "zidentyfikowane_ryzyka" MUSISZ wypełniać WYŁĄCZNIE danymi ze [ZBIORU 1] (Dokumenty Firmy). 
-2. ŚLEPOTA NA ZBIÓR 2: CAŁKOWICIE IGNORUJ wszelkie liczby, wskaźniki, żargon i przykłady ze [ZBIORU 2] przy wypełnianiu tablic. To jest tylko tło prawne. Służy Ci ono tylko do napisania sekcji "wnioski_i_zgodnosc_prawna".
-3. ZAKAZ TWORZENIA PUSTYCH WSKAŹNIKÓW (BEZWZGLĘDNY): W tablicy "wskazniki_liczbowe" mogą znaleźć się TYLKO te wskaźniki, dla których w [ZBIORZE 1] występuje KONKRETNA LICZBA (np. 450, 850, 12%). 
-4. ZERO NULLI: Zabraniam używania wartości "null". Jeśli nie znasz dokładnej wartości ze ZBIORU 1, w ogóle nie dodawaj tego wskaźnika do JSON-a. Jeśli w ZBIORZE 1 nie ma twardych liczb, po prostu zostaw tablicę pustą [].
-5. SPECJALIZACJA: {current_hint}
-
-OCZEKIWANA, ŚCISŁA STRUKTURA JSON (Zastąp tagi <...> faktycznymi danymi z tekstu):
-{{
-  "kategoria": "{target_tag}",
-  "wskazniki_liczbowe": [
-     {{"nazwa": "<Krótka nazwa znalezionego wskaźnika>", "wartosc": <Tylko_liczba_bez_stringów>, "jednostka": "<np. tCO2e, %, MWh>"}}
-  ],
-  "wdrozone_polityki_i_dzialania": [
-     "<Zidentyfikowane działanie firmy 1 ze ZBIORU 1>"
-  ],
-  "zidentyfikowane_ryzyka": [
-     "<Zidentyfikowane ryzyko dla firmy ze ZBIORU 1>"
-  ],
-  "wnioski_i_zgodnosc_prawna": "<1-2 zdania oceniające wyniki firmy. Tutaj i TYLKO TUTAJ możesz odnieść się do tego, czy wyniki firmy ze ZBIORU 1 pasują do wymogów prawnych ze ZBIORU 2.>"
-}}
-"""
-
-    # 6. Wywołanie OpenAI
-    openai_client = get_openai_client()
-    if not openai_client:
-        raise HTTPException(status_code=500, detail="Brak klucza API.")
-
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Jesteś analitykiem ESG. Twój jedyny język to poprawny JSON."},
-                {"role": "user", "content": report_prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            timeout=25.0
-        )
-
-        import json
-        raw_ai_response = response.choices[0].message.content
-        report_json = json.loads(raw_ai_response)
-
-    except openai.APITimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout (504): Serwer AI nie wygenerował raportu w czasie.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd generowania raportu: {str(e)}")
-
-    # 7. Zapis do bazy
-    try:
-        save_report(
-            user_id=user_id,
-            input_text=f"Generowanie raportu: {target_tag}",
-            response_text=raw_ai_response,
-            report_type="unified_esg_report"
-        )
-    except Exception as e:
-        logging.warning(f"Nie udało się zapisać raportu do bazy: {e}")
+    async_result = generate_report_task.delay(user_id, request.tag)
+    _register_task_owner(async_result.id, user_id)
 
     return {
-        "status": "success",
-        "mode": "report_generation",
-        "kategoria": target_tag,
-        "rag_used": True,
-        "data": report_json
+        "task_id": async_result.id,
+        "status": "queued",
+        "message": "Raport jest generowany w tle. Sprawdź /status/{task_id} po wynik.",
     }
 # ====================
 
@@ -627,70 +531,58 @@ async def upload_knowledge_files(
     tag: str = Form("general"),
     document_type: str = Form("general"),
     version: str = Form("1.0"),
-    user = Depends(get_current_user)
+    user = Depends(get_current_user),
 ):
-    #tylko admin moze update knowledge
+    """
+    Asynchroniczne przesyłanie plików do bazy wiedzy (parse + chunk + embed przez Celery).
+    Zwraca listę {filename, task_id} — status sprawdzaj przez GET /status/{task_id}.
+    Tylko admin.
+    """
     if not user or user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only admins can upload knowledge documents")
-    """
-    Endpoint do przesyłania plików do bazy wiedzy ("knowledge_documents", nie "knowledge_chunks"!!!!).
-    Parsuje pliki, wyciąga tekst i zapisuje do Supabase (dokumenty + chunki).
-    """
+
     if not files:
         raise HTTPException(status_code=400, detail="Brak przesłanych plików.")
 
-    results = []
-    dispatcher = ParserDispatcher()
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
 
-    # Tworzymy folder tymczasowy
-    tmp_dir = Path(tempfile.mkdtemp(prefix="knowledge_upload_"))
-    try:
-        for upload_file in files:
-            safe_name = sanitize_filename(upload_file.filename or "unknown")
-            tmp_path = tmp_dir / safe_name
+    enqueued = []
+    for upload_file in files:
+        safe_name = sanitize_filename(upload_file.filename or "unknown")
+        tmp_dir = tempfile.mkdtemp(prefix="kb_upload_", dir=str(tmp_root))
+        tmp_path = Path(tmp_dir) / safe_name
 
-            await save_upload_streamed(upload_file, tmp_path)
-
-            try:
-                parse_result = dispatcher.parse(tmp_path)
-                raw_text = parse_result.text
-
-                if not raw_text.strip():
-                    results.append({
-                        "file": safe_name,
-                        "status": "skipped",
-                        "reason": "Brak wyodrębnionego tekstu."
-                    })
-                    continue
-
-                db_res = await add_document_to_knowledge_base(
-                    title=safe_name,
-                    source=f"upload:{safe_name}",
-                    raw_text=raw_text,
-                    tag=tag,
-                    document_type=document_type,
-                    version=version,
-                    uploaded_by=str(user["id"])
-                )
-
-                results.append({
-                    "file": safe_name,
-                    "status": "success",
-                    "document_id": db_res["document_id"]
-                })
-
-            except Exception as e:
-                results.append({
-                    "file": safe_name,
+        try:
+            written = await save_upload_streamed(upload_file, tmp_path)
+            if written > MAX_FILE_SIZE:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                enqueued.append({
+                    "filename": safe_name,
                     "status": "error",
-                    "detail": str(e)
+                    "error": f"Plik '{safe_name}' przekracza limit 50MB",
                 })
+                continue
 
-    finally:
-        # Usuwamy pliki tymczasowe
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+            async_result = process_knowledge_document_full.delay(
+                _rel_task_path(tmp_path, tmp_root),
+                safe_name,
+                tag=tag,
+                document_type=document_type,
+                version=version,
+                uploaded_by=str(user["id"]),
+            )
+            _register_task_owner(async_result.id, str(user["id"]))
+            enqueued.append({
+                "filename": safe_name,
+                "status": "queued",
+                "task_id": async_result.id,
+            })
+        except Exception as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            enqueued.append({"filename": safe_name, "status": "error", "error": str(e)})
 
-    return {"results": results}
+    return {"results": enqueued}
 
 
 
@@ -739,7 +631,7 @@ async def parse_and_store_knowledge(
 
     # Uruchomienie taska Celery
     async_result = parse_and_store_to_knowledge.delay(
-        str(tmp_path),
+        _rel_task_path(tmp_path, tmp_root),
         safe_name,
         tag=tag,
         document_type=document_type,
@@ -780,66 +672,46 @@ except ImportError:
 
 @app.post("/user/documents/upload")
 async def upload_user_document(
-        file: UploadFile = File(...),
-        tag: str = Form("project_x"),  # Użytkownik może otagować plik (np. nazwą projektu)
-        user=Depends(get_current_user)
+    file: UploadFile = File(...),
+    tag: str = Form("project_x"),
+    user=Depends(get_current_user),
 ):
     """
-    Kompleksowy endpoint dla użytkownika:
-    1. Upload pliku.
-    2. Parsowanie tekstu (PDF/DOCX -> TXT).
-    3. Zapis do bazy (user_documents).
-    4. Chunking + Embedding (user_document_chunks).
+    Asynchroniczny upload dokumentu użytkownika (parse + chunk + embed przez Celery).
+    Zwraca task_id; wynik sprawdzasz przez GET /status/{task_id}.
     """
-
-    # 1. Walidacja usera
     if not user or 'id' not in user:
         raise HTTPException(status_code=401, detail="User ID not found")
 
-    user_id = user['id']
+    user_id = str(user['id'])
 
-    # 2. Przygotowanie pliku i parsowanie
-    dispatcher = ParserDispatcher()
+    tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="user_rag_", dir=str(tmp_root))
+    safe_name = sanitize_filename(file.filename or "uploaded_doc")
+    tmp_path = Path(tmp_dir) / safe_name
 
-    # Tworzymy folder tymczasowy
-    tmp_dir = Path(tempfile.mkdtemp(prefix="user_rag_"))
     try:
-        safe_name = sanitize_filename(file.filename or "uploaded_doc")
-        tmp_path = tmp_dir / safe_name
+        written = await save_upload_streamed(file, tmp_path)
+        if written > MAX_FILE_SIZE:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(status_code=413, detail=f"Plik '{safe_name}' przekracza limit 50MB")
 
-        # Zapis na dysk
-        await save_upload_streamed(file, tmp_path)
-
-        # Ekstrakcja tekstu (używamy Waszych parserów)
-        parse_result = dispatcher.parse(tmp_path)
-        raw_text = parse_result.text
-
-        if not raw_text or not raw_text.strip():
-            raise HTTPException(status_code=400, detail="Nie udało się wydobyć tekstu z pliku.")
-
-        # 3. Wywołanie serwisu (Logika biznesowa + Embeddingi)
-        # To tutaj dzieje się magia, którą napisałeś w user_document_service.py
-        result = await process_and_save_user_document(
-            user_id=str(user_id),
-            filename=safe_name,
-            raw_text=raw_text,
-            file_type=tmp_path.suffix.replace(".", ""),  # np. 'pdf'
-            tag=tag
-        )
+        async_result = process_user_document.delay(_rel_task_path(tmp_path, tmp_root), safe_name, user_id, tag)
+        _register_task_owner(async_result.id, user_id)
 
         return {
-            "status": "success",
+            "task_id": async_result.id,
+            "status": "queued",
             "filename": safe_name,
-            "details": result
+            "message": "Dokument jest przetwarzany w tle. Sprawdź /status/{task_id} po wynik.",
         }
-
-    except Exception as e:
-        print(f"Error processing user document: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-    finally:
-        # Sprzątanie
+    except HTTPException:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class DeleteUserDocumentRequest(BaseModel):

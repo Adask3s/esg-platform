@@ -1,0 +1,117 @@
+version: "3.9"
+
+# =====================================================================
+# ESG Platform — infrastruktura dev (Redis + Celery worker + beat + Flower)
+#
+# FastAPI DZIAŁA NA HOŚCIE (uvicorn backend.main:app --reload).
+# Kontenery komunikują się z Redis przez hostname "redis".
+# FastAPI na hoście komunikuje się z Redis przez localhost:6379.
+#
+# Uruchomienie:
+#   docker-compose up -d redis celery-worker celery-beat
+#   docker-compose up flower          # opcjonalnie (monitoring)
+#
+# Logi workera:
+#   docker-compose logs -f celery-worker
+# =====================================================================
+
+services:
+
+  # ------------------------------------------------------------------
+  # Redis — broker kolejek Celery + backend wyników (task state)
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: esg_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Celery Worker — wykonuje taski z kolejek: parsing, embeddings, llm
+  # ------------------------------------------------------------------
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: esg_celery_worker
+    env_file:
+      - .env
+    environment:
+      # Worker łączy się do Redisa przez nazwę serwisu "redis"
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      PYTHONPATH: "/app"
+      # Ścieżka do katalogu tmp wewnątrz kontenera (bind-mounted z hosta)
+      # FastAPI (host) przekazuje relatywne ścieżki, worker rekonstruuje pełną ścieżkę
+      WORKER_TMP_ROOT: "/app/tmp_uploads"
+    volumes:
+      # Bind mount — zmiany w kodzie są widoczne bez rebuild
+      - .:/app
+      # Wspólne katalogi temp z hostem (FastAPI zapisuje pliki, worker je czyta)
+      - ./tmp_uploads:/app/tmp_uploads
+      - ./output_test_parser:/app/output_test_parser
+    command: >
+      celery -A backend.celery.celery_app worker
+      --loglevel=info
+      -Q default,parsing,embeddings,embeddings_bulk,llm
+      --concurrency=4
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Celery Beat — scheduler (gotowy na przyszłe zadania cykliczne)
+  # ------------------------------------------------------------------
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: esg_celery_beat
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      PYTHONPATH: "/app"
+    volumes:
+      - .:/app
+    command: >
+      celery -A backend.celery.celery_app beat
+      --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Flower — monitoring tasków Celery (opcjonalny)
+  # Dostępny na: http://localhost:5555
+  # ------------------------------------------------------------------
+  flower:
+    image: mher/flower:2.0
+    container_name: esg_flower
+    environment:
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      FLOWER_PORT: "5555"
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+    name: esg_redis_data
