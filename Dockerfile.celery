@@ -1,0 +1,37 @@
+# Dockerfile dla Celery worker + beat
+# FastAPI pozostaje na hoście (hot-reload dev).
+# Ten image uruchamia worker i beat w kontenerach.
+
+FROM python:3.11-slim
+
+# Zależności systemowe:
+# - poppler-utils: wymagane przez pdfplumber do parsowania PDF
+# - gcc + libpq-dev: wymagane jeśli jakiś pakiet buduje się ze źródła (fallback)
+# Uwaga: używamy psycopg2-binary w requirements.txt (brak kompilacji C),
+#        ale gcc zostawiamy na wypadek innych pakietów
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+    libglib2.0-0 \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Kopiuj requirements i zainstaluj zależności (warstwa cache)
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Kopiuj cały projekt (bind mount w dev nadpisuje tę warstwę)
+COPY . .
+
+# Domyślne env (nadpisywane przez docker-compose)
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Domyślna komenda — worker na wszystkich kolejkach
+CMD ["celery", "-A", "backend.celery.celery_app", "worker", \
+     "--loglevel=info", \
+     "-Q", "default,parsing,embeddings,embeddings_bulk,llm", \
+     "--concurrency=4"]

@@ -1,18 +1,27 @@
 """
 Router dla endpointów embeddingów.
-Obsługuje generowanie i zarządzanie embeddingami OpenAI.
+Generowanie embeddingów odbywa się ASYNCHRONICZNIE przez Celery.
+Endpointy zwracają task_id — wynik pobierasz przez GET /status/{task_id}.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from backend.embeddings.embedding_service import (
-    generate_embeddings_for_document,
-    generate_embeddings_for_all_documents,
-    generate_embeddings_by_tag
-)
 from database.supabase_client import get_supabase
+
+# Celery taski embeddingów
+from backend.celery.embedding_tasks import (
+    generate_embeddings_for_document_task,
+    generate_embeddings_for_tag_task,
+    generate_embeddings_for_all_task,
+)
+
+# Potrzebujemy get_current_user do ownership registration
+try:
+    from backend.auth import get_current_user
+except ImportError:
+    from auth import get_current_user  # type: ignore
 
 
 router = APIRouter(
@@ -40,110 +49,69 @@ class TagEmbeddingRequest(BaseModel):
 
 
 # ============================================================
-# ENDPOINTY
+# ENDPOINTY — asynchroniczne (Celery)
 # ============================================================
 
 
-
 @router.post("/generate-for-document")
-async def generate_document_embeddings(request: DocumentEmbeddingRequest):
+async def generate_document_embeddings(
+    request: DocumentEmbeddingRequest,
+    user=Depends(get_current_user),
+):
     """
-    GŁÓWNY ENDPOINT EMBEDDINGÓW (ZADANIE 2).
+    Asynchroniczne generowanie embeddingów dla WSZYSTKICH chunków danego dokumentu.
+    Zwraca task_id — wynik pobierasz przez GET /status/{task_id}.
 
-    Generuje embeddingi dla WSZYSTKICH chunków należących do danego dokumentu.
-
-    Body:
-    {
-        "document_id": "uuid-dokumentu",
-        "model": "text-embedding-3-small"  // opcjonalne
-    }
-
-    Flow:
-    1. Pobiera wszystkie chunki z knowledge_chunks WHERE document_id = ...
-    2. Generuje embeddingi (batch processing)
-    3. Zapisuje embeddingi do kolumny 'embedding' w knowledge_chunks
-
-    Returns:
-    {
-        "document_id": "...",
-        "total_chunks": 42,
-        "updated": 42,
-        "failed": 0,
-        "model": "text-embedding-3-small",
-        "embedding_dim": 1536
-    }
+    Body: {"document_id": "uuid", "model": "text-embedding-3-small", "table_name": "knowledge_chunks"}
     """
-    try:
-        result = await generate_embeddings_for_document(
-            request.document_id,
-            model=request.model,
-            table_name=request.table_name  # Przekazujemy parametr
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
+    async_result = generate_embeddings_for_document_task.delay(
+        request.document_id,
+        request.model,
+        request.table_name,
+    )
+    return {
+        "task_id": async_result.id,
+        "status": "queued",
+        "document_id": request.document_id,
+        "table_name": request.table_name,
+    }
 
 
 @router.post("/generate-for-tag")
-async def generate_tag_embeddings(request: TagEmbeddingRequest):
+async def generate_tag_embeddings(
+    request: TagEmbeddingRequest,
+    user=Depends(get_current_user),
+):
     """
-    ENDPOINT EMBEDDINGÓW DLA TAGU (ZADANIE 2 - rozszerzenie).
+    Asynchroniczne generowanie embeddingów dla chunków z danym tagiem ESG.
+    Zwraca task_id — wynik pobierasz przez GET /status/{task_id}.
 
-    Generuje embeddingi dla wszystkich chunków z danym tagiem (np. 'social', 'environmental').
-
-    Body:
-    {
-        "tag": "social",
-        "model": "text-embedding-3-small"  // opcjonalne
-    }
-
-    Przydatne gdy chcesz embedować tylko chunki z konkretnej kategorii ESG.
-
-    Returns:
-    {
-        "tag": "social",
-        "total_chunks_processed": 120,
-        "updated": 120,
-        "failed": 0,
-        "model": "text-embedding-3-small",
-        "embedding_dim": 1536
-    }
+    Body: {"tag": "social", "model": "text-embedding-3-small"}
     """
-    try:
-        result = await generate_embeddings_by_tag(request.tag, model=request.model)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
+    async_result = generate_embeddings_for_tag_task.delay(request.tag, request.model)
+    return {
+        "task_id": async_result.id,
+        "status": "queued",
+        "tag": request.tag,
+    }
 
 
 @router.post("/generate-all")
-async def generate_all_embeddings(model: str = "text-embedding-3-small"):
+async def generate_all_embeddings(
+    model: str = "text-embedding-3-small",
+    user=Depends(get_current_user),
+):
     """
-    ENDPOINT EMBEDDINGÓW - BATCH PROCESSING (ZADANIE 2 - zaawansowane).
-
-    Generuje embeddingi dla WSZYSTKICH chunków w bazie, które nie mają jeszcze embeddingu.
-
-    ⚠️ UWAGA: Może być kosztowne dla dużych baz danych!
-    ⚠️ Zalecane użycie tylko podczas pierwszej inicjalizacji bazy.
-
-    Query params:
-    - model: "text-embedding-3-small" (domyślnie)
-
-    Returns:
-    {
-        "status": "completed",
-        "total_chunks_processed": 500,
-        "updated": 500,
-        "failed": 0,
-        "model": "text-embedding-3-small",
-        "embedding_dim": 1536
+    Asynchroniczne generowanie embeddingów dla WSZYSTKICH chunków bez embeddingu.
+    ⚠️ Długotrwałe — używaj tylko podczas inicjalizacji bazy.
+    Zwraca task_id — wynik pobierasz przez GET /status/{task_id}.
+    """
+    async_result = generate_embeddings_for_all_task.delay(model)
+    return {
+        "task_id": async_result.id,
+        "status": "queued",
+        "model": model,
     }
-    """
-    try:
-        result = await generate_embeddings_for_all_documents(model=model)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Błąd generowania embeddingów: {str(e)}")
 
 
 @router.get("/status")
