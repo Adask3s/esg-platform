@@ -47,6 +47,7 @@ services:
       - .env
     environment:
       # Worker łączy się do Redisa przez nazwę serwisu "redis"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
       REDIS_URL: "redis://redis:6379/0"
       CELERY_RESULT_BACKEND: "redis://redis:6379/0"
       PYTHONPATH: "/app"
@@ -80,6 +81,7 @@ services:
     env_file:
       - .env
     environment:
+      CELERY_BROKER_URL: "redis://redis:6379/0"
       REDIS_URL: "redis://redis:6379/0"
       CELERY_RESULT_BACKEND: "redis://redis:6379/0"
       PYTHONPATH: "/app"

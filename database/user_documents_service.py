@@ -6,10 +6,17 @@ from backend.ingestion.models import ChunkConfig
 from backend.embeddings.embedding_service import get_embedding
 
 
+def check_user_document_hash(user_id: str, file_hash: str) -> bool:
+    supabase = get_supabase()
+    result = supabase.table("user_documents").select("id").eq("user_id", user_id).eq("file_hash", file_hash).execute()
+    return len(result.data) > 0
+
+
 async def process_and_save_user_document(
         user_id: str,
         filename: str,
         raw_text: str,
+        file_hash: str = None,
         file_type: str = "pdf",
         tag: str = "user_upload"
 ):
@@ -31,6 +38,8 @@ async def process_and_save_user_document(
         "raw_text": raw_text,
         "tag": tag
     }
+    if file_hash:
+        document_payload["file_hash"] = file_hash
 
     # Insert i pobranie ID
     doc_response = supabase.table("user_documents").insert(document_payload).execute()
