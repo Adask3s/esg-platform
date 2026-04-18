@@ -624,3 +624,88 @@ def ingest_chunk_file_task(
         return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
     finally:
         _cleanup_tmp(path)
+
+@celery_app.task(bind=True, name="backend.celery.tasks.process_chat_query")
+def process_chat_query(self, session_id: str, user_id: str, final_query: str, search_tag: str):
+    from backend.RAG.rag_retriever import retrieve_context_async
+    from backend.RAG.prompt_builder import construct_prompt
+    import openai
+    import os
+    import json
+    from database.chat_repository import get_chat_messages, add_chat_message
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise Exception("Brak klucza OPENAI_API_KEY w .env")
+    openai_client = openai.OpenAI(api_key=openai_key)
+
+    self.update_state(state="PROGRESS", meta={"step": "retrieving", "progress": 20})
+    
+    found_chunks = asyncio.run(retrieve_context_async(
+        query=final_query,
+        user_id=user_id,
+        match_count=20,
+        match_threshold=0.25,
+        filter_tag=search_tag
+    ))
+
+    self.update_state(state="PROGRESS", meta={"step": "prompting", "progress": 50})
+    if not found_chunks:
+        system_prompt = f"""
+SYSTEM ROLE:
+Jesteś asystentem AI ds. ESG. Odpowiadasz na pytania użytkowników.
+
+SYTUACJA KRYTYCZNA:
+W dostarczonych dokumentach NIE ZNALEZIONO żadnych informacji powiązanych z najnowszym pytaniem.
+
+INSTRUCTIONS:
+1. Rozpocznij odpowiedź od dokładnego ostrzeżenia: "⚠️ **Brak danych w załączonych dokumentach.** W dostarczonej bazie wiedzy nie znalazłem informacji na ten temat. Poniższa odpowiedź opiera się na ogólnej wiedzy."
+2. Następnie udziel profesjonalnej, teoretycznej odpowiedzi na pytanie.
+3. POD ŻADNYM POZOREM nie wymyślaj statystyk ani faktów dotyczących konkretnej firmy.
+"""
+    else:
+        system_prompt = construct_prompt(
+            query="",
+            context_chunks=found_chunks,
+            focused_tag=search_tag
+        )
+
+    history = get_chat_messages(session_id, limit=50, offset=0)
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+
+    self.update_state(state="PROGRESS", meta={"step": "openai", "progress": 70})
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.4,
+            timeout=30.0
+        )
+        ai_answer = response.choices[0].message.content
+    except Exception as e:
+        raise Exception(f"Wewnętrzny błąd serwera AI: {str(e)}")
+
+    used_chunks_str = json.dumps(found_chunks) if found_chunks else None
+
+    add_chat_message(
+        session_id=session_id,
+        role="assistant",
+        content=ai_answer,
+        rag_used=bool(found_chunks),
+        applied_filter=search_tag,
+        used_chunks=used_chunks_str
+    )
+
+    self.update_state(state="PROGRESS", meta={"step": "done", "progress": 100})
+    return {
+        "status": "success",
+        "mode": "chat_mode",
+        "rag_used": bool(found_chunks),
+        "final_query_used": final_query,
+        "applied_filter": search_tag or "Brak",
+        "ai_answer": ai_answer
+    }
+
