@@ -47,6 +47,11 @@ def construct_prompt(
     if focused_tag:
         tag_instruction = f"\nUWAGA: Skup się w swojej analizie wyłącznie na aspekcie: '{focused_tag}'."
 
+    if query:
+        user_question_block = f"---\nUSER QUESTION:\n\"{query}\"\n"
+    else:
+        user_question_block = ""
+
     # 2. Przygotowanie szablonu (Szkieletu) promptu
     # Używamy placeholderów {context} żeby potem wstawić tam tekst
     base_prompt_template = f"""
@@ -57,11 +62,7 @@ SYSTEM ROLE:
 ---
 CONTEXT (Fragments form Knowledge Base & User Documents):
 {{context_placeholder}}
-
----
-USER QUESTION:
-"{query}"
-
+{user_question_block}
 INSTRUCTIONS:
 Odpowiedz na pytanie używając wyłącznie powyższego kontekstu. Jeśli w kontekście nie ma odpowiedzi, napisz "Nie mam wystarczających informacji w dokumentach".
 """
