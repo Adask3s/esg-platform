@@ -4,11 +4,16 @@ from backend.ingestion.chunker import chunk_text
 from backend.ingestion.models import ChunkConfig
 from backend.embeddings.embedding_service import get_embedding
 
+def check_knowledge_document_hash(file_hash: str) -> bool:
+    supabase = get_supabase()
+    result = supabase.table("knowledge_documents").select("id").eq("file_hash", file_hash).execute()
+    return len(result.data) > 0
+
 # Funkcja orkiestrująca proces RAG Ingestion:
 # 1. Insert do knowledge_documents (z raw_text i tagiem).
 # 2. Chunkowanie (użycie ingestion modułu).
 # 3. Insert do knowledge_chunks (z tagiem i document_id).
-async def add_document_to_knowledge_base(title: str, source: str, raw_text: str, tag: str = "general", document_type: str = "general", version: str = "1.0", uploaded_by: str | None = None):
+async def add_document_to_knowledge_base(title: str, source: str, raw_text: str, file_hash: str = None, tag: str = "general", document_type: str = "general", version: str = "1.0", uploaded_by: str | None = None):
     supabase = get_supabase()
 
     # Zapis dokumentu ---
@@ -23,6 +28,8 @@ async def add_document_to_knowledge_base(title: str, source: str, raw_text: str,
         "document_type": document_type,
         "version": version
     }
+    if file_hash:
+        document_payload["file_hash"] = file_hash
     if uploaded_by:
         document_payload["uploaded_by"] = uploaded_by
 
