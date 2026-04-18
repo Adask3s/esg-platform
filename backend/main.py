@@ -28,6 +28,7 @@ try:
         process_knowledge_document_full,
         ingest_chunk_file_task,
         ingest_chunk_url_task,
+        process_chat_query,
     )
     from backend.celery.report_tasks import generate_report_task
 except ImportError:
@@ -39,6 +40,7 @@ except ImportError:
         process_knowledge_document_full,
         ingest_chunk_file_task,
         ingest_chunk_url_task,
+        process_chat_query,
     )
     from backend.celery.report_tasks import generate_report_task  # type: ignore
 from celery.result import AsyncResult
@@ -792,23 +794,40 @@ except ImportError:
     from .RAG.prompt_builder import construct_prompt  # type: ignore
 
 class ChatRequest(BaseModel):
-    query: Optional[str] = None  # <-- ZMIANA: Teraz query może być puste (None)
+    query: Optional[str] = None
     tag: Optional[str] = None
+    session_id: Optional[str] = None
+
+from database.chat_repository import create_chat_session, add_chat_message, get_chat_sessions, get_chat_messages
+
+@app.get("/chat/sessions")
+def get_sessions(limit: int = 50, offset: int = 0, user = Depends(get_current_user)):
+    """Pobiera listę sesji konwersacji użytkownika."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+    return get_chat_sessions(str(user['id']), limit, offset)
+
+
+@app.get("/chat/sessions/{session_id}/history")
+def get_session_history(session_id: str, limit: int = 50, offset: int = 0, user = Depends(get_current_user)):
+    """Pobiera chronologiczną historię danej konwersacji."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+    # TODO: weryfikacja czy user_id jest wlascicielem sesji. Tu uprotek.
+    return get_chat_messages(session_id, limit, offset)
 
 
 @app.post("/chat/ask")
-async def ask_chat(request: ChatRequest):
+async def ask_chat(request: ChatRequest, user = Depends(get_current_user)):
     """
-    Czysty endpoint czatu Q&A.
+    Endpoint czatu (Celery Odtworzony RAG). Zwraca task_id.
     Służy wyłącznie do odpowiadania na pytania użytkownika na podstawie bazy wektorowej.
     """
-    # Twarda autoryzacja, żeby RAG miał z czego wziąć user_id
     if not user or 'id' not in user:
         raise HTTPException(status_code=401, detail="Brak autoryzacji.")
 
     user_id = str(user['id'])
 
-    # 1. TWARDA WALIDACJA PYTANIA
     if not request.query or not request.query.strip():
         raise HTTPException(
             status_code=400,
@@ -816,84 +835,24 @@ async def ask_chat(request: ChatRequest):
         )
 
     final_query = request.query.strip()
-
-    # Jeśli frontend nie przyśle tagu, ustawiamy None (brak filtru -> szukamy we wszystkich otagowanych i nieotagowanych)
     search_tag = request.tag if request.tag else None
+    
+    # 1. Obsługa sesji
+    session_id = request.session_id
+    if not session_id:
+        title = final_query[:50] + ("..." if len(final_query) > 50 else "")
+        session_id = create_chat_session(user_id=user_id, title=title)
 
-    # --- KROK 1: RETRIEVAL ---
-    found_chunks = await retrieve_context_async(
-        query=search_query,
-        user_id=user_id,  # <--- KRYTYCZNE: Baza musi szukać tylko w plikach tego użytkownika
-        match_count=20,  # <-- Zwiększamy liczbę fragmentów, żeby złapać szerszy kontekst
-        match_threshold=0.25,
-        # Drastyczne obniżenie progu tylko dla raportów (Zgarnianie danych szeroką siecią)
-        filter_tag=db_filter_tag
-    )
+    # 2. Zapis wiadomości jako użytkownik
+    add_chat_message(session_id=session_id, role="user", content=final_query)
 
-    # --- KROK 2: PROMPT BUILDING & FALLBACK ---
-    if not found_chunks:
-        # FALLBACK: Brak wyników w bazie danych dla zadanego pytania
-        final_prompt = f"""
-SYSTEM ROLE:
-Jesteś asystentem AI ds. ESG. Odpowiadasz na pytania użytkowników.
-
-SYTUACJA KRYTYCZNA:
-Użytkownik zadał pytanie, ale w dostarczonych dokumentach NIE ZNALEZIONO żadnych informacji na ten temat.
-
-USER QUESTION:
-{final_query}
-
-INSTRUCTIONS:
-1. Rozpocznij odpowiedź od dokładnego ostrzeżenia: "⚠️ **Brak danych w załączonych dokumentach.** W dostarczonej bazie wiedzy nie znalazłem informacji na ten temat. Poniższa odpowiedź opiera się na ogólnej wiedzy."
-2. Następnie udziel profesjonalnej, teoretycznej odpowiedzi na pytanie.
-3. POD ŻADNYM POZOREM nie wymyślaj statystyk ani faktów dotyczących konkretnej firmy.
-"""
-    else:
-        # STANDARD FLOW: Mamy kontekst z bazy.
-        final_prompt = construct_prompt(
-            query=final_query,
-            context_chunks=found_chunks,
-            focused_tag=search_tag
-        )
-
-    # --- KROK 3: WYSŁANIE DO OPENAI Z ZABEZPIECZENIEM TIMEOUT ---
-    openai_client = get_openai_client()
-    if not openai_client:
-        raise HTTPException(status_code=500, detail="Brak klucza OPENAI_API_KEY w .env")
-
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "user", "content": final_prompt}
-            ],
-            temperature=0.4,
-            timeout=15.0
-        )
-        ai_answer = response.choices[0].message.content
-
-    except openai.APITimeoutError:
-        raise HTTPException(status_code=504,
-                            detail="Timeout (504): Serwer AI nie odpowiedział w wyznaczonym czasie (15s).")
-    except openai.RateLimitError:
-        raise HTTPException(status_code=429, detail="Rate Limit (429): Przekroczono limit zapytań OpenAI.")
-    except openai.APIError as e:
-        raise HTTPException(status_code=502, detail=f"Bad Gateway (502): Awaria dostawcy OpenAI: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd serwera AI: {str(e)}")
-
-    # --- KROK 4: OUTPUT ---
-    logging.info(f"Input Tag: {search_tag}")
-    logging.info(f"\n\nFinal Query:\n{final_query}")
-    logging.info(f"\n\nFound Chunks:\n{found_chunks}")
-    logging.info(f"\n\nAI Answer:\n{ai_answer}")
+    # 3. Wysyłamy zadanie w tło
+    async_result = process_chat_query.delay(session_id, user_id, final_query, search_tag)
+    _register_task_owner(async_result.id, user_id)
 
     return {
-        "status": "success",
-        "mode": "chat_mode",
-        "rag_used": bool(found_chunks),
-        "final_query_used": final_query,
-        "applied_filter": search_tag or "Brak (przeszukano całą bazę)",
-        "ai_answer": ai_answer,
-        "debug_prompt": final_prompt
+        "status": "queued",
+        "task_id": async_result.id,
+        "session_id": session_id,
+        "message": "Pytanie przetwarzane w tle. Sprawdź status zadania.",
     }
