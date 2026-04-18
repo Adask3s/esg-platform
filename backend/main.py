@@ -9,8 +9,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depend
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
-from database.knowledge_service import add_document_to_knowledge_base
-from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk
+from database.knowledge_service import add_document_to_knowledge_base, check_knowledge_document_hash
+from database.user_documents_service import check_user_document_hash
+from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk, calculate_file_hash
 from pydantic import BaseModel
 import logging
 
@@ -564,6 +565,16 @@ async def upload_knowledge_files(
                 })
                 continue
 
+            file_hash = calculate_file_hash(tmp_path)
+            if check_knowledge_document_hash(file_hash):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                enqueued.append({
+                    "filename": safe_name,
+                    "status": "error",
+                    "error": "Ten dokument został już wgrany do bazy wiedzy (duplikat).",
+                })
+                continue
+
             async_result = process_knowledge_document_full.delay(
                 _rel_task_path(tmp_path, tmp_root),
                 safe_name,
@@ -571,6 +582,7 @@ async def upload_knowledge_files(
                 document_type=document_type,
                 version=version,
                 uploaded_by=str(user["id"]),
+                file_hash=file_hash,
             )
             _register_task_owner(async_result.id, str(user["id"]))
             enqueued.append({
@@ -629,6 +641,11 @@ async def parse_and_store_knowledge(
 
     validate_file_on_disk(tmp_path, safe_name)
 
+    file_hash = calculate_file_hash(tmp_path)
+    if check_knowledge_document_hash(file_hash):
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=409, detail="Ten dokument został już wgrany do bazy wiedzy (duplikat).")
+
     # Uruchomienie taska Celery
     async_result = parse_and_store_to_knowledge.delay(
         _rel_task_path(tmp_path, tmp_root),
@@ -636,7 +653,8 @@ async def parse_and_store_knowledge(
         tag=tag,
         document_type=document_type,
         version=version,
-        uploaded_by=str(user["id"])
+        uploaded_by=str(user["id"]),
+        file_hash=file_hash
     )
 
     return {
@@ -697,7 +715,12 @@ async def upload_user_document(
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(status_code=413, detail=f"Plik '{safe_name}' przekracza limit 50MB")
 
-        async_result = process_user_document.delay(_rel_task_path(tmp_path, tmp_root), safe_name, user_id, tag)
+        file_hash = calculate_file_hash(tmp_path)
+        if check_user_document_hash(user_id, file_hash):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(status_code=409, detail="Ten dokument został już przez Ciebie wgrany (duplikat).")
+
+        async_result = process_user_document.delay(_rel_task_path(tmp_path, tmp_root), safe_name, user_id, tag, file_hash)
         _register_task_owner(async_result.id, user_id)
 
         return {
