@@ -178,6 +178,7 @@ def parse_and_store_to_knowledge(
     document_type: str = "general",
     version: str = "1.0",
     uploaded_by: str | None = None,
+    file_hash: str = None,
 ) -> Dict[str, Any]:
     """
     Parsuj plik i zapisz do bazy wiedzy (knowledge_documents + knowledge_chunks bez embeddingów).
@@ -216,6 +217,7 @@ def parse_and_store_to_knowledge(
             title=original_filename,
             source=f"upload:{original_filename}",
             raw_text=raw_text,
+            file_hash=file_hash,
             tag=tag,
             document_type=document_type,
             version=version,
@@ -256,6 +258,7 @@ def process_user_document(
     original_filename: str,
     user_id: str,
     tag: str = "project_x",
+    file_hash: str = None,
 ) -> Dict[str, Any]:
     """
     Monolityczny task: parsuj -> wyciągnij tekst -> chunk + embed -> zapis do user_documents(_chunks).
@@ -304,6 +307,7 @@ def process_user_document(
             user_id=user_id,
             filename=original_filename,
             raw_text=raw_text,
+            file_hash=file_hash,
             file_type=path.suffix.replace(".", "") or "pdf",
             tag=tag,
         ))
@@ -346,6 +350,7 @@ def process_knowledge_document_full(
     document_type: str = "general",
     version: str = "1.0",
     uploaded_by: str | None = None,
+    file_hash: str = None,
 ) -> Dict[str, Any]:
     """
     Pełny pipeline KB: parsowanie + zapis do knowledge_documents/chunks + generowanie embeddingów.
@@ -387,6 +392,7 @@ def process_knowledge_document_full(
             title=original_filename,
             source=f"upload:{original_filename}",
             raw_text=raw_text,
+            file_hash=file_hash,
             tag=tag,
             document_type=document_type,
             version=version,

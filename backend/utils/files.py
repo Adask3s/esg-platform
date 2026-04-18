@@ -1,4 +1,5 @@
 import re
+import hashlib
 from pathlib import Path
 from fastapi import HTTPException
 
@@ -97,3 +98,13 @@ def validate_file_on_disk(path: Path, original_name: str) -> None:
         with path.open("rb") as f:
             if not f.read(5).startswith(b"%PDF-"):
                 raise HTTPException(status_code=415, detail="Nieprawidłowy nagłówek PDF")
+
+def calculate_file_hash(path: Path, chunk_size: int = 8192) -> str:
+    """
+    Wylicza skrót SHA-256 z pliku na dysku.
+    """
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
