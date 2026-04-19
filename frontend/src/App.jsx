@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import "./App.css";
 import Dashboard from "./pages/Dashboard";
+import AIReports from "./pages/AIReports";
 import Login from "./pages/Login";
 import SignUp from "./pages/SignUp";
 import ContactUs from "./pages/ContactUs";
@@ -35,6 +36,7 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<Dashboard user={user} onLogout={handleLogout} />} />
+      <Route path="/aireports" element={<AIReports />} />
       <Route path="/login" element={<Login onLogin={handleLogin} />} />
       <Route path="/signup" element={<SignUp onLogin={handleLogin} />} />
       <Route path="/contact" element={<ContactUs />} />

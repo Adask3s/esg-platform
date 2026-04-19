@@ -139,6 +139,10 @@ export default function Dashboard({ user, onLogout }) {
     }));
   }
 
+  const openAiReport = (doc) => {
+    navigate("/aireports", { state: { doc: doc || null } });
+  };
+
   return (
     <div className="page">
       <header className="topbar">
@@ -311,7 +315,7 @@ export default function Dashboard({ user, onLogout }) {
                     ) : "-"}
                   </span>
                   <span>
-                    <button className="table-btn">AI Report</button>
+                    <button className="table-btn" onClick={() => openAiReport(doc)}>AI Report</button>
                   </span>
                 </div>
               ))
