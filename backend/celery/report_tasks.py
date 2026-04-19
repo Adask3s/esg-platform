@@ -146,6 +146,24 @@ def generate_report_task(
         else:
             user_chunks.append(chunk)
 
+    # ================= KOD DEBUGUJĄCY PODZIAŁ RAG =================
+    import logging
+
+    # Wyciągamy unikalne nazwy dokumentów z obu koszyków (tylko pierwsza linijka ze znacznikiem --- DOKUMENT:)
+    user_docs = set([c.split('\n')[0] for c in user_chunks])
+    kb_docs = set([c.split('\n')[0] for c in kb_chunks])
+
+    logging.info("================ RAPORT RAG: WERYFIKACJA ŹRÓDEŁ ================")
+    logging.info(f"ZBIÓR 1 (Firma) - Ilość fragmentów: {len(user_chunks)}")
+    logging.info(f"Lista przypisanych plików do ZBIORU 1: {user_docs}")
+    logging.info(f"ZBIÓR 2 (Prawo UE) - Ilość fragmentów: {len(kb_chunks)}")
+    logging.info(f"Lista przypisanych plików do ZBIORU 2: {kb_docs}")
+    logging.info("==================================================================")
+    # ----------------------------------
+
+    user_context = "\n\n".join(user_chunks) if user_chunks else "Brak danych z raportów firmy."
+    # ================= KONIEC KODU DEBUGUJĄCEGO PODZIAŁ RAG =================
+
     user_context = "\n\n".join(user_chunks) if user_chunks else "Brak danych z raportów firmy."
     kb_context = "\n\n".join(kb_chunks) if kb_chunks else "Brak danych prawnych z bazy wiedzy."
     hint = TAG_HINTS.get(target_tag, TAG_HINTS["ESG"])

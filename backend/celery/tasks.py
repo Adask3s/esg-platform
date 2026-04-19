@@ -649,6 +649,30 @@ def process_chat_query(self, session_id: str, user_id: str, final_query: str, se
         filter_tag=search_tag
     ))
 
+    # ============== POCZĄTEK BEZPIECZNEGO KODU DEBUGUJĄCEGO ==================
+    import logging  # Dodany import do logowania
+    user_chunks_debug = []
+    kb_chunks_debug = []
+
+    for c in found_chunks:
+        first_line = c.split('\n')[0].lower()
+        if any(kw in first_line for kw in ["celex", "rozporządzenie", "dyrektywa"]):
+            kb_chunks_debug.append(c)
+        else:
+            user_chunks_debug.append(c)
+
+    user_docs = set([c.split('\n')[0] for c in user_chunks_debug])
+    kb_docs = set([c.split('\n')[0] for c in kb_chunks_debug])
+
+    logging.info("================ CZAT RAG: WERYFIKACJA ŹRÓDEŁ ================")
+    logging.info(f"ZBIÓR 1 (Firma) - Ilość fragmentów: {len(user_chunks_debug)}")
+    logging.info(f"Pliki zidentyfikowane jako FIRMA: {user_docs}")
+    logging.info(f"ZBIÓR 2 (Prawo UE) - Ilość fragmentów: {len(kb_chunks_debug)}")
+    logging.info(f"Pliki zidentyfikowane jako PRAWO: {kb_docs}")
+    logging.info("================================================================")
+    # ==================== KONIEC BEZPIECZNEGO KODU DEBUGUJĄCEGO =======================
+
+
     self.update_state(state="PROGRESS", meta={"step": "prompting", "progress": 50})
     if not found_chunks:
         system_prompt = f"""
