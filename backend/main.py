@@ -5,13 +5,14 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
 from database.knowledge_service import add_document_to_knowledge_base, check_knowledge_document_hash
 from database.user_documents_service import check_user_document_hash
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk, calculate_file_hash
+from .utils.pdf_generator import ReportData, generate_report_pdf
 from pydantic import BaseModel
 import logging
 
@@ -526,6 +527,47 @@ async def generate_report(request: ReportRequest, user=Depends(get_current_user)
         "status": "queued",
         "message": "Raport jest generowany w tle. Sprawdź /status/{task_id} po wynik.",
     }
+
+
+@app.get("/report/download/{task_id}")
+async def download_report_pdf_from_task(task_id: str, user=Depends(get_current_user)):
+    """
+    Pobiera wygenerowany raport jako PDF na podstawie ID zakończonego zadania Celery.
+    Nie musisz już podawać całego JSON-a, endpoint sam go wyciągnie z wyniku zadania.
+    """
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+        
+    # Opcjonalny ownership check
+    if not _check_task_owner(task_id, str(user["id"])):
+        raise HTTPException(status_code=403, detail="Brak dostępu do tego zadania.")
+
+    res = AsyncResult(task_id, app=celery_app)
+    if res.state != "SUCCESS":
+        raise HTTPException(status_code=400, detail=f"Raport nie jest jeszcze gotowy lub wystąpił błąd. Aktualny status: {res.state}")
+
+    result_data = (res.result or {}).get("data")
+    if not result_data:
+        raise HTTPException(status_code=404, detail="To zadanie zakończyło się, ale nie zawiera danych raportu (JSON).")
+
+    try:
+        # Rzutowanie słownika z pamięci Celery na obiekt Pydantic uzywany przez generację PDF
+        report_data = ReportData(**result_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd mapowania danych na PDF: {e}")
+
+    try:
+        pdf_bytes = generate_report_pdf(report_data)
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="raport_{report_data.kategoria}.pdf"'
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+        
+    except Exception as e:
+        logging.error(f"Błąd generowania PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail="Wewnętrzny błąd serwera podczas konwersji do PDF.")
+
 # ====================
 
 @app.post("/knowledge/upload")

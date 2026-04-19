@@ -18,3 +18,4 @@ passlib[bcrypt]
 python-jose[cryptography]
 tiktoken
 flower
+reportlab
