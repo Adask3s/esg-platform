@@ -107,9 +107,19 @@ def generate_report_task(
         meta={"step": "init", "stage_pl": "Inicjalizacja", "progress": 5, "user_id": user_id},
     )
 
+    TAG_MAPPING = {
+        "E": "Environmental",
+        "S": "Social",
+        "G": "Governance",
+        "ESG": "ESG"
+    }
+    
     # Ustalenie kontekstu zapytania
-    target_tag = tag.strip() if tag and tag.strip() else "ESG"
-    db_filter_tag = tag if tag and tag.strip() else None
+    raw_tag = tag.strip() if tag and tag.strip() else "ESG"
+    target_tag = TAG_MAPPING.get(raw_tag, raw_tag)
+    
+    # Usuwamy db_filter_tag, żeby sztucznie nie ucinało dokumentów wrzuconych np. z tagiem "project_x"
+    db_filter_tag = None
     search_query = VECTOR_QUERIES.get(target_tag, VECTOR_QUERIES["ESG"])
 
     # === RAG retrieval ===
@@ -141,7 +151,8 @@ def generate_report_task(
     user_chunks = []
     kb_chunks = []
     for chunk in found_chunks:
-        if "CELEX" in chunk or "Rozporządzenie" in chunk or "Dyrektywa" in chunk:
+        first_line = chunk.split('\n', 1)[0]
+        if "CELEX" in first_line or "Rozporządzenie" in first_line or "Dyrektywa" in first_line:
             kb_chunks.append(chunk)
         else:
             user_chunks.append(chunk)
