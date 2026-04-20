@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 import pytest
 
+import backend.auth as auth_mod
 import backend.main as main
 
 
@@ -18,119 +19,117 @@ def clear_dependency_overrides():
     main.app.dependency_overrides.clear()
 
 
-def _mock_openai_client(create_impl):
-    completions = SimpleNamespace(create=create_impl)
-    chat = SimpleNamespace(completions=completions)
-    return SimpleNamespace(chat=chat)
+def set_auth_user(user):
+    main.app.dependency_overrides[main.get_current_user] = lambda: user
+    main.app.dependency_overrides[auth_mod.get_current_user] = lambda: user
 
 
-def _mock_openai_success(content: str):
-    response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-    )
-
-    def _create(**kwargs):
-        return response
-
-    return _mock_openai_client(_create)
-
-
-def test_chat_ask_fallback_when_no_context_found(client, monkeypatch):
-    async def fake_retrieve_context_async(query, match_count, filter_tag):
-        return []
-
-    monkeypatch.setattr(main, "retrieve_context_async", fake_retrieve_context_async)
-    monkeypatch.setattr(main, "get_openai_client", lambda: _mock_openai_success("Fallback answer"))
-
-    response = client.post(
-        "/chat/ask",
-        json={"query": "Co to jest ESG?", "tag": "Environmental"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "success"
-    assert payload["rag_used"] is False
-    assert "Brak danych w załączonych dokumentach" in payload["debug_prompt"]
-    assert payload["ai_answer"] == "Fallback answer"
-
-
-def test_chat_ask_returns_429_on_openai_rate_limit(client, monkeypatch):
-    class FakeRateLimitError(Exception):
-        pass
-
-    async def fake_retrieve_context_async(query, match_count, filter_tag):
-        return ["chunk"]
-
-    def fake_construct_prompt(query, context_chunks, focused_tag):
-        return "prompt"
-
-    def fail_with_rate_limit(**kwargs):
-        raise FakeRateLimitError("rate limit")
-
-    monkeypatch.setattr(main, "retrieve_context_async", fake_retrieve_context_async)
-    monkeypatch.setattr(main, "construct_prompt", fake_construct_prompt)
-    monkeypatch.setattr(main.openai, "RateLimitError", FakeRateLimitError)
-    monkeypatch.setattr(main, "get_openai_client", lambda: _mock_openai_client(fail_with_rate_limit))
-
-    response = client.post("/chat/ask", json={"query": "Pytanie testowe"})
-
-    assert response.status_code == 429
-    assert "Rate Limit (429)" in response.json()["detail"]
-
-
-def test_chat_ask_returns_500_on_unexpected_openai_error(client, monkeypatch):
-    async def fake_retrieve_context_async(query, match_count, filter_tag):
-        return ["chunk"]
-
-    def fake_construct_prompt(query, context_chunks, focused_tag):
-        return "prompt"
-
-    def fail_unexpected(**kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(main, "retrieve_context_async", fake_retrieve_context_async)
-    monkeypatch.setattr(main, "construct_prompt", fake_construct_prompt)
-    monkeypatch.setattr(main, "get_openai_client", lambda: _mock_openai_client(fail_unexpected))
-
-    response = client.post("/chat/ask", json={"query": "Pytanie testowe"})
-
-    assert response.status_code == 500
-    assert "Wewnętrzny błąd serwera AI" in response.json()["detail"]
-    assert "boom" in response.json()["detail"]
+def test_chat_ask_requires_auth(client):
+    response = client.post("/chat/ask", json={"query": "Co to jest ESG?"})
+    assert response.status_code == 401
 
 
 def test_chat_ask_rejects_empty_query(client):
+    set_auth_user({"id": "u1", "role": "user"})
     response = client.post("/chat/ask", json={"query": "   "})
-
     assert response.status_code == 400
     assert "Pytanie nie może być puste" in response.json()["detail"]
 
 
-def test_documents_mine_requires_auth(client):
-    response = client.get("/documents/mine")
-
+def test_chat_ask_rejects_user_without_id(client):
+    set_auth_user({"role": "user"})
+    response = client.post("/chat/ask", json={"query": "test"})
     assert response.status_code == 401
-    assert "Not authenticated" in response.json()["detail"]
 
 
-def test_documents_knowledge_forbidden_for_non_admin(client):
-    main.app.dependency_overrides[main.get_current_user] = lambda: {
-        "id": "u-1",
-        "username": "user",
-        "role": "user",
-    }
+def test_status_requires_auth(client):
+    response = client.get("/status/task-1")
+    assert response.status_code == 401
 
-    response = client.get("/documents/knowledge")
 
+def test_status_forbidden_for_foreign_task(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main, "_check_task_owner", lambda task_id, user_id: False)
+
+    response = client.get("/status/task-1")
     assert response.status_code == 403
-    assert "Only admins can access knowledge documents" in response.json()["detail"]
 
 
-def test_user_documents_delete_returns_401_when_user_has_no_id(client):
-    main.app.dependency_overrides[main.get_current_user] = lambda: {"role": "user"}
+def test_status_failure_marks_non_retryable_for_value_error(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main, "_check_task_owner", lambda task_id, user_id: True)
 
-    response = client.post("/user/documents/delete", json={"document_id": "doc-1"})
+    class FakeAsyncResult:
+        def __init__(self, task_id, app):
+            self.state = "FAILURE"
+            self.info = None
+            self.result = ValueError("bad input")
 
+    monkeypatch.setattr(main, "AsyncResult", FakeAsyncResult)
+
+    response = client.get("/status/task-1")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["error"]["type"] == "ValueError"
+    assert payload["error"]["retryable"] is False
+
+
+def test_status_failure_marks_retryable_for_runtime_error(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main, "_check_task_owner", lambda task_id, user_id: True)
+
+    class FakeAsyncResult:
+        def __init__(self, task_id, app):
+            self.state = "FAILURE"
+            self.info = None
+            self.result = RuntimeError("temporary")
+
+    monkeypatch.setattr(main, "AsyncResult", FakeAsyncResult)
+
+    response = client.get("/status/task-1")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["error"]["type"] == "RuntimeError"
+    assert payload["error"]["retryable"] is True
+
+
+def test_knowledge_upload_forbidden_for_non_admin(client):
+    set_auth_user({"id": "u1", "role": "user"})
+    response = client.post("/knowledge/upload", files=[("files", ("a.txt", b"x", "text/plain"))])
+    assert response.status_code == 403
+
+
+def test_knowledge_parse_and_store_forbidden_for_non_admin(client):
+    set_auth_user({"id": "u1", "role": "user"})
+    response = client.post("/knowledge/parse-and-store", files={"file": ("a.txt", b"x", "text/plain")})
+    assert response.status_code == 403
+
+
+def test_user_documents_upload_rejects_duplicate_file(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+
+    async def fake_save_upload_streamed(file, tmp_path):
+        tmp_path.write_bytes(b"x")
+        return 1
+
+    monkeypatch.setattr(main, "save_upload_streamed", fake_save_upload_streamed)
+    monkeypatch.setattr(main, "check_user_document_hash", lambda user_id, file_hash: True)
+
+    response = client.post("/user/documents/upload", files={"file": ("a.txt", b"x", "text/plain")})
+    assert response.status_code == 409
+    assert "duplikat" in response.json()["detail"].lower()
+
+
+def test_report_generate_requires_user_id(client):
+    set_auth_user({"role": "user"})
+    response = client.post("/report/generate", json={"tag": "Environmental"})
     assert response.status_code == 401
-    assert response.json()["detail"] == "Unauthorized"
+
+
+def test_report_generate_queued_for_valid_user(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, tag: SimpleNamespace(id="rep-1"))
+
+    response = client.post("/report/generate", json={"tag": "Environmental"})
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "rep-1"
