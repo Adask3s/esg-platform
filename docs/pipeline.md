@@ -20,7 +20,18 @@ This document describes the end-to-end pipeline from document upload to ESG repo
 
 ## Stage 1 — Document Upload
 
-The user uploads one or more documents through the frontend (supported formats: PDF, XLSX, DOCX, and plain text). The user may also attach tags that will later be used to filter relevant chunks during retrieval. Celery enqueues a processing task for each uploaded file.
+The user uploads one or more documents through the frontend (supported formats: PDF, XLSX, DOCX, and plain text). The user may also attach tags (Environmental, Social, Governance) that will later be used to filter relevant chunks during retrieval.
+
+Uploads are handled by the `MultiFileUpload` component, which supports:
+
+- Up to 10 files per batch
+- Maximum 50 MB per file
+- Up to 3 concurrent uploads (the rest are queued)
+- Per-file ESG tag selection
+- Per-file phase tracking: `queued` → `uploading` → `processing` → `done` / `error`
+- Polling of task status every 1.5 s until each file completes
+
+Each file POST returns a Celery `task_id`. The frontend then polls the task-status endpoint independently for each file. Celery enqueues parsing tasks asynchronously so the user is never blocked.
 
 ## Stage 2 — Text Extraction
 
@@ -93,10 +104,24 @@ This layered structure ensures the model has regulatory grounding (knowledge con
 
 The assembled prompt is submitted to the LLM via the `llm` Celery queue. The model:
 - Interprets the company data in the context of ESG regulations
-- Generates structured report content in natural language
-- Returns the output to the backend, which stores it and forwards it to the frontend
+- Generates a structured JSON payload (numeric indicators, implemented policies, identified risks, conclusions)
+- Returns the output to the backend, which caches it on the Celery task result
 
-If the user selected tags, the retrieved chunks are further filtered by metadata category before prompt assembly, producing a tag-specific report section.
+If the user selected tags, the retrieved chunks are further filtered by metadata category before prompt assembly, producing a tag-specific report section (Environmental, Social, or Governance).
+
+### Background retrieval and PDF streaming
+
+Report generation is a non-blocking background task. The frontend triggers `/report/generate`, receives a `task_id`, and polls the task status endpoint. Once the task reaches `SUCCESS` the user can hit `/report/download/{task_id}` to receive a PDF directly.
+
+The PDF is rendered by `backend/utils/pdf_generator.py` using ReportLab. The renderer takes the structured `ReportData` payload (built earlier by the LLM stage) and produces a styled PDF containing:
+
+- Title page with the ESG category
+- A numeric indicators table (name / value / unit)
+- A bulleted list of implemented policies and actions
+- A bulleted list of identified risks
+- A conclusions and legal-compliance section
+
+Because the LLM output is cached on the Celery result backend, downloading the PDF does **not** trigger another LLM call.
 
 ## Stage 9 — Interactive Editing
 
