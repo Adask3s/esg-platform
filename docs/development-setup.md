@@ -9,6 +9,8 @@
 | Docker + Docker Compose | 24 | Redis, Celery |
 | Git | any | Version control |
 
+The Python backend depends, among others, on `fastapi`, `uvicorn`, `celery`, `redis`, `openai`, `supabase`, `pdfplumber`, `python-docx`, `openpyxl`, `tiktoken`, `python-jose[cryptography]`, `passlib[bcrypt]`, `flower`, and **`reportlab`** (server-side PDF rendering for downloadable ESG reports). The full list is in `backend/requirements.txt`.
+
 You also need:
 - An OpenAI API key with access to `text-embedding-ada-002` and a GPT-4 model
 - A Supabase project with the `pgvector` extension enabled
@@ -122,6 +124,39 @@ pytest                          # all tests
 pytest test_common_endpoints.py # endpoint tests only
 pytest test_e2e.py              # end-to-end tests
 ```
+
+## Diagnostic Scripts
+
+### diagnose_rag.py
+
+A standalone script at the project root that exercises the RAG retrieval path directly, bypassing FastAPI and Celery. It is the fastest way to inspect what context the LLM would actually receive for a given query — useful when answers look wrong and you need to tell whether the issue is in retrieval or in the prompt/model.
+
+**Usage:**
+
+```bash
+python diagnose_rag.py "Your question" "<user_id>" ["optional_tag"]
+```
+
+**Arguments:**
+
+| Position | Name | Description |
+|----------|------|-------------|
+| 1 | `query` | Free-form question, e.g. `"What are our Scope 1 emissions?"` |
+| 2 | `user_id` | UUID of the user whose documents should be searched |
+| 3 | `tag` | Optional metadata tag filter (e.g. `Environmental`) |
+
+**What it shows:**
+
+- Total number of matching chunks returned
+- Header line of each retrieved chunk
+- First ~100 characters of each chunk's body
+- A summary that splits the matches into two buckets:
+  - **User documents** — chunks from `documents_embeddings`
+  - **Knowledge base (EU regulations)** — chunks recognized by markers like `celex` or `rozporządzenie` in the header
+
+If no chunks come back, the script prints likely causes (wrong `user_id`, non-existent tag, or a similarity threshold that is too strict).
+
+**Defaults:** `match_count=20`, `match_threshold=0.20`. These can be tuned by editing the call to `run_diagnostics` in the script.
 
 ## Useful Commands
 
