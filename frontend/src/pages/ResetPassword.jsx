@@ -1,8 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import "../styles/Auth.css";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function ResetPassword() {
   const [step, setStep] = useState("email"); 
@@ -13,7 +10,6 @@ export default function ResetPassword() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
 
   const handleRequestReset = async (e) => {
     e.preventDefault();
@@ -22,21 +18,8 @@ export default function ResetPassword() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/auth/request-reset`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data?.detail || "Failed to send reset email");
-        return;
-      }
-
-      setSuccess("Reset link sent to your email");
-      setStep("reset");
+      setSuccess("Password reset is not connected in the backend yet. Use the contact form for support.");
+      setStep("email");
     } catch (err) {
       setError(err.message || "An error occurred");
     } finally {
@@ -57,21 +40,7 @@ export default function ResetPassword() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/auth/reset-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, code, password: newPassword }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data?.detail || "Failed to reset password");
-        return;
-      }
-
-      setSuccess("Password reset successfully! Redirecting to login...");
-      setTimeout(() => navigate("/login"), 2000);
+      setSuccess("Password reset is not connected in the backend yet. Use the contact form for support.");
     } catch (err) {
       setError(err.message || "An error occurred");
     } finally {
@@ -97,7 +66,7 @@ export default function ResetPassword() {
           {step === "email" ? (
             <>
               <h2>Reset Password</h2>
-              <p className="auth-subtitle">Enter your email address</p>
+              <p className="auth-subtitle">Password reset is not automated yet. Use contact support.</p>
 
               {error && <div className="error-message">{error}</div>}
               {success && <div className="success-message">{success}</div>}
@@ -117,14 +86,14 @@ export default function ResetPassword() {
                 </div>
 
                 <button type="submit" className="primary-btn" disabled={loading}>
-                  {loading ? "Sending..." : "Send Reset Link"}
+                  {loading ? "Please wait..." : "Continue"}
                 </button>
               </form>
             </>
           ) : (
             <>
               <h2>Reset Password</h2>
-              <p className="auth-subtitle">Enter the code from your email</p>
+              <p className="auth-subtitle">Password reset is not automated yet. Use contact support.</p>
 
               {error && <div className="error-message">{error}</div>}
               {success && <div className="success-message">{success}</div>}
@@ -170,12 +139,12 @@ export default function ResetPassword() {
                 </div>
 
                 <button type="submit" className="primary-btn" disabled={loading}>
-                  {loading ? "Resetting..." : "Reset Password"}
+                  {loading ? "Please wait..." : "Reset Password"}
                 </button>
               </form>
 
               <div className="auth-footer">
-                <p><a href="/login">Back to login</a></p>
+                <p><a href="/contact">Contact support</a> | <a href="/login">Back to login</a></p>
               </div>
             </>
           )}
