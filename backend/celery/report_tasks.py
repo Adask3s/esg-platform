@@ -117,9 +117,15 @@ def generate_report_task(
     # Ustalenie kontekstu zapytania
     raw_tag = tag.strip() if tag and tag.strip() else "ESG"
     target_tag = TAG_MAPPING.get(raw_tag, raw_tag)
-    
-    # Usuwamy db_filter_tag, żeby sztucznie nie ucinało dokumentów wrzuconych np. z tagiem "project_x"
-    db_filter_tag = None
+
+    # TWARDY RYGOR PRODUKCYJNY DLA FRONTENDU
+    # Jeśli użytkownik klika raport główny "ESG", ściągamy filtr, by zassać wszystkie pliki z bazy (E, S, G, ESG)
+    if target_tag == "ESG":
+        db_filter_tag = None
+    else:
+        # Jeśli klika raport cząstkowy (Environmental, Social, Governance), ucinamy resztę na twardo
+        db_filter_tag = target_tag
+
     search_query = VECTOR_QUERIES.get(target_tag, VECTOR_QUERIES["ESG"])
 
     # === RAG retrieval ===

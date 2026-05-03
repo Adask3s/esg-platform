@@ -157,6 +157,31 @@ Trigger asynchronous ESG report generation.
 }
 ```
 
+### GET /report/download/{task_id}
+Download a generated report as a PDF, streamed directly from the cached Celery task result.
+
+**Auth:** Required
+
+**Path params:**
+- `task_id` — the ID returned from `/report/generate`
+
+**Behavior:**
+- Verifies that the authenticated user owns the task.
+- Verifies that the task state is `SUCCESS`. Returns `400` if it is still pending or has failed.
+- Reads the structured `ReportData` payload from the task result, renders it to PDF via ReportLab, and streams the binary response.
+- The LLM is **not** re-run; this endpoint is purely a render-and-download operation.
+
+**Response:** `application/pdf` with header `Content-Disposition: attachment; filename="raport_<kategoria>.pdf"`.
+
+**Error responses:**
+| Status | Cause |
+|--------|-------|
+| 400 | Task is not in `SUCCESS` state |
+| 401 | Missing or invalid token |
+| 403 | The task does not belong to the authenticated user |
+| 404 | Task succeeded but contains no report payload |
+| 500 | PDF rendering error |
+
 ### GET /report/{report_id}
 Retrieve a generated report by ID.
 
