@@ -38,6 +38,7 @@ export default function AIReports() {
   const navigate = useNavigate();
   const location = useLocation();
   const activeReportDoc = location.state?.doc || null;
+  const reportSourceLabel = activeReportDoc?.name || activeReportDoc?.filename || "All uploaded documents";
   const token = localStorage.getItem("token");
   const environmentalRef = useRef(null);
   const socialRef = useRef(null);
@@ -266,7 +267,7 @@ export default function AIReports() {
           <p className="ai-report-side-label">ACTIVE CITATIONS</p>
           {(indicators.length ? indicators : [{ nazwa: "No extracted metric yet" }]).slice(0, 3).map((item, idx) => (
             <div className="ai-report-citation" key={`${item.nazwa || "metric"}-${idx}`}>
-              <strong>{activeReportDoc?.name || activeReportDoc?.filename || "Generated Report"}</strong>
+              <strong>{reportSourceLabel}</strong>
               <span>{formatIndicator(item)}</span>
               <button type="button">COMPARE WITH ORIGINAL</button>
             </div>
@@ -282,7 +283,7 @@ export default function AIReports() {
       </main>
 
       <footer className="ai-report-footer">
-        <div className="ai-report-file">{activeReportDoc?.name || activeReportDoc?.filename || "annual_report_draft_v2.pdf"}</div>
+        <div className="ai-report-file">{reportSourceLabel}</div>
         <div className="ai-report-footer-actions">
           <button type="button" className="save-btn">
             Save Draft

@@ -18,7 +18,7 @@ export default function ContactUs() {
 
     try {
 
-      const response = await fetch(`${API_URL}/contact`, {
+      const response = await fetch(`${API_URL}/auth/contact`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, problem }),
