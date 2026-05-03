@@ -8,6 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export default function Dashboard({ user, onLogout }) {
   const [userDocuments, setUserDocuments] = useState([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [documentsError, setDocumentsError] = useState("");
   const navigate = useNavigate();
 
   const isLoggedIn = !!user?.token;
@@ -15,6 +16,7 @@ export default function Dashboard({ user, onLogout }) {
   const refreshUserDocuments = useCallback(async () => {
     if (!isLoggedIn) return;
     setLoadingDocuments(true);
+    setDocumentsError("");
     try {
       const res = await fetch(`${API_URL}/documents/mine`, {
         method: "GET",
@@ -27,6 +29,7 @@ export default function Dashboard({ user, onLogout }) {
     } catch (err) {
       console.error("Failed to fetch documents:", err);
       setUserDocuments([]);
+      setDocumentsError(err.message || "Failed to load documents");
     } finally {
       setLoadingDocuments(false);
     }
@@ -35,6 +38,32 @@ export default function Dashboard({ user, onLogout }) {
   useEffect(() => {
     refreshUserDocuments();
   }, [refreshUserDocuments]);
+
+  const deleteUserDocument = async (documentId) => {
+    if (!documentId) return;
+    const confirmed = window.confirm("Delete this document and all related chunks?");
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`${API_URL}/user/documents/delete`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.token}`,
+        },
+        body: JSON.stringify({ document_id: documentId }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || "Failed to delete document.");
+      }
+
+      await refreshUserDocuments();
+    } catch (err) {
+      console.error("Delete error:", err);
+    }
+  };
 
   const openAiReport = (doc) => {
     navigate("/aireports", { state: { doc: doc || null } });
@@ -49,6 +78,7 @@ export default function Dashboard({ user, onLogout }) {
         <nav className="nav">
           {isLoggedIn ? (
             <>
+              {user?.role === "admin" ? <a href="/admin">Admin Panel</a> : null}
               <a href="/contact">Contact us</a>
               <button
                 onClick={onLogout}
@@ -105,7 +135,17 @@ export default function Dashboard({ user, onLogout }) {
         )}
 
         <section className="history-section">
-          <h2>Document Processing History</h2>
+          <div className="history-header">
+            <h2>Document Processing History</h2>
+            <button
+              type="button"
+              className="table-btn history-generate-btn"
+              onClick={() => openAiReport()}
+              disabled={!userDocuments.length}
+            >
+              Generate Report
+            </button>
+          </div>
           <div className="history-table">
             <div className="history-row history-head">
               <span>File name</span>
@@ -139,6 +179,11 @@ export default function Dashboard({ user, onLogout }) {
                 }}
               >
                 <p>Loading your documents...</p>
+              </div>
+            ) : documentsError ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", gridColumn: "1/-1" }}>
+                <p style={{ marginBottom: "10px", color: "#1F2041" }}>Could not load your documents</p>
+                <p style={{ color: "#666", fontSize: "14px" }}>{documentsError}</p>
               </div>
             ) : userDocuments.length === 0 ? (
               <div
@@ -186,6 +231,9 @@ export default function Dashboard({ user, onLogout }) {
                       onClick={() => openAiReport(doc)}
                     >
                       AI Report
+                    </button>
+                    <button className="table-btn danger" onClick={() => deleteUserDocument(doc.id)}>
+                      Delete
                     </button>
                   </span>
                 </div>
