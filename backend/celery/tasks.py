@@ -12,13 +12,17 @@ from backend.celery.celery_app import celery_app
 
 # ----------------------------------------------------------------
 # Cross-OS path resolver
-# FastAPI (Windows host) zapisuje pliki do np. C:\...\tmp_uploads\subdir\file
-# i przekazuje TYLKO RELATYWNĄ ścieżkę (subdir/file) do tasków.
-# Worker w Dockerze rekonstruuje pełną ścieżkę używając WORKER_TMP_ROOT.
-# Na tej samej maszynie (bez Dockera) można ustawić WORKER_TMP_ROOT
-# na tę samą ścieżkę co UPLOAD_TMP_ROOT.
+# FastAPI zapisuje pliki do repo/tmp_uploads i przekazuje TYLKO RELATYWNĄ
+# ścieżkę (subdir/file) do tasków. Worker rekonstruuje pełną ścieżkę
+# używając WORKER_TMP_ROOT; domyślnie wskazujemy na lokalny tmp_uploads,
+# żeby działało w uruchomieniu Windows bez Dockera.
 # ----------------------------------------------------------------
-_WORKER_TMP_ROOT = Path(os.getenv("WORKER_TMP_ROOT", "/app/tmp_uploads"))
+_WORKER_TMP_ROOT = Path(
+    os.getenv(
+        "WORKER_TMP_ROOT",
+        os.getenv("UPLOAD_TMP_ROOT", str(Path(__file__).resolve().parents[2] / "tmp_uploads")),
+    )
+)
 
 
 def _resolve_tmp_path(path_str: str) -> Path:
