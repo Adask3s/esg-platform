@@ -246,18 +246,27 @@ export default function AIReports() {
               <div className="ai-report-placeholder" aria-hidden="true" />
               <p className="ai-report-page-footer">TASK: {taskState} · {taskProgress}%</p>
             </article>
-
-            <button
-              type="button"
-              className="ai-report-insight"
-              onClick={() => setRagSidebarOpen((v) => !v)}
-              aria-expanded={ragSidebarOpen}
-            >
-              <span className="ai-report-insight-title">AI INSIGHT</span>
-              <span className="ai-report-insight-copy">{legalSummary || "Waiting for generated insight"}</span>
-              <span className="ai-report-insight-btn">Update Section</span>
-            </button>
           </div>
+
+          <button
+            type="button"
+            className="ai-report-insight-toggle"
+            onClick={() => setRagSidebarOpen((v) => !v)}
+            title="Show statistics"
+          >
+            {ragSidebarOpen ? "<" : ">"}
+          </button>
+
+          <button
+            type="button"
+            className="ai-report-insight"
+            onClick={() => setRagSidebarOpen((v) => !v)}
+            aria-expanded={ragSidebarOpen}
+          >
+            <span className="ai-report-insight-title">AI INSIGHT</span>
+            <span className="ai-report-insight-copy">{legalSummary || "Waiting for generated insight"}</span>
+            <span className="ai-report-insight-btn">Update Section</span>
+          </button>
         </section>
 
         <aside className={`ai-report-rag ${ragSidebarOpen ? "is-open" : ""}`}>

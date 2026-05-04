@@ -226,12 +226,6 @@ export default function Dashboard({ user, onLogout }) {
                       : "-"}
                   </span>
                   <span>
-                    <button
-                      className="table-btn"
-                      onClick={() => openAiReport(doc)}
-                    >
-                      AI Report
-                    </button>
                     <button className="table-btn danger" onClick={() => deleteUserDocument(doc.id)}>
                       Delete
                     </button>
