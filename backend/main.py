@@ -849,7 +849,7 @@ class ChatRequest(BaseModel):
     tag: Optional[str] = None
     session_id: Optional[str] = None
 
-from database.chat_repository import create_chat_session, add_chat_message, get_chat_sessions, get_chat_messages
+from database.chat_repository import create_chat_session, add_chat_message, get_chat_sessions, get_chat_messages, delete_chat_session
 
 @app.get("/chat/sessions")
 def get_sessions(limit: int = 50, offset: int = 0, user = Depends(get_current_user)):
@@ -857,6 +857,18 @@ def get_sessions(limit: int = 50, offset: int = 0, user = Depends(get_current_us
     if not user or 'id' not in user:
         raise HTTPException(status_code=401, detail="Brak autoryzacji.")
     return get_chat_sessions(str(user['id']), limit, offset)
+
+
+@app.delete("/chat/sessions/{session_id}", status_code=204)
+def delete_session(session_id: str, user = Depends(get_current_user)):
+    """Usuwa sesję czatu użytkownika wrąz z całą historią wiadomości."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+    
+    success = delete_chat_session(str(user['id']), session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Nie znaleziono sesji lub nie masz do niej dostępu.")
+    return None
 
 
 @app.get("/chat/sessions/{session_id}/history")
