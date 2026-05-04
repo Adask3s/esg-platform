@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response, APIRouter
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
@@ -15,6 +15,7 @@ from .utils.files import save_upload_streamed, sanitize_filename, validate_file_
 from .utils.pdf_generator import ReportData, generate_report_pdf
 from pydantic import BaseModel
 import logging
+import json
 
 # Kaskadowe usuwanie dokumentów użytkownika (dokument + powiązane chunki/wektory)
 from database.user_documents_deleting import delete_user_document_cascade
@@ -906,3 +907,55 @@ async def ask_chat(request: ChatRequest, user = Depends(get_current_user)):
         "session_id": session_id,
         "message": "Pytanie przetwarzane w tle. Sprawdź status zadania.",
     }
+
+# =========== ENDPOINT GET DLA WSZYSTKICH RAPORTÓW USERA ===============
+from database.report_repo import get_reports_by_user, get_report_by_id
+@app.get("/reports/user", tags=["Reports"])
+async def get_user_reports_endpoint(user_id: str):
+    """Pobiera skróconą listę wszystkich raportów użytkownika."""
+    try:
+        rows = get_reports_by_user(user_id)
+        # rows to lista krotek (id, report_type, created_at) zdefiniowana w report_repo.py
+        reports = [
+            {"id": r[0], "report_type": r[1], "created_at": r[2]}
+            for r in rows
+        ]
+        return {"status": "success", "reports": reports}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy: {str(e)}")
+
+# =========== ENDPOINT GET DLA RAPORTU PO RAPORT_ID (Z NOWĄ KOLUMNĄ USED_CHUNKS) - JSON DLA FRONT'U ===============
+@app.get("/reports/{report_id}", tags=["Reports"])
+async def get_single_report_endpoint(report_id: str, user_id: str):
+    """Pobiera pełen wygenerowany JSON oraz powiązane chunki źródłowe."""
+    try:
+        report = get_report_by_id(report_id, user_id)
+        if not report:
+            raise HTTPException(status_code=404, detail="Raport nie istnieje lub brak dostępu.")
+
+        # 1. Parsowanie stringa AI do JSON-a
+        try:
+            parsed_content = json.loads(report["response_text"] or "{}")
+        except json.JSONDecodeError:
+            parsed_content = {"error": "Błąd dekodowania JSON ze stringa."}
+
+        # 2. Parsowanie chunków
+        used_chunks = []
+        if report["used_chunks"]:
+            try:
+                used_chunks = json.loads(report["used_chunks"])
+            except json.JSONDecodeError:
+                used_chunks = []
+
+        return {
+            "status": "success",
+            "metadata": {
+                "id": report["id"],
+                "report_type": report["report_type"],
+                "created_at": report["created_at"]
+            },
+            "content": parsed_content,
+            "used_chunks": used_chunks
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd serwera: {str(e)}")
