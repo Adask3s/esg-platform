@@ -47,3 +47,19 @@ def add_chat_message(session_id: str, role: str, content: str, rag_used: bool = 
     if not response.data:
         raise Exception("Nie udało się zapisać wiadomości czatu")
     return response.data[0]["id"]
+
+def delete_chat_session(user_id: str, session_id: str) -> bool:
+    supabase = get_supabase()
+    
+    # Verify owner first
+    session = supabase.table("chat_sessions").select("id").eq("id", session_id).eq("user_id", user_id).execute()
+    if not session.data:
+        return False
+        
+    # Delete child messages explicitly (to handle cases without ON DELETE CASCADE)
+    supabase.table("chat_messages").delete().eq("session_id", session_id).execute()
+    
+    # Delete main session record
+    response = supabase.table("chat_sessions").delete().eq("id", session_id).execute()
+    return bool(response.data)
+
