@@ -217,17 +217,28 @@ def generate_report_task(
         # Permanent failure — nie retryujemy złego JSON-a
         raise ValueError(f"AI zwrócił nieprawidłowy JSON: {exc}") from exc
 
+    # ========== Zapis raportu ===============
+    self.update_state(
+        state="PROGRESS",
+        meta={"step": "persisting", "stage_pl": "Zapisywanie raportu", "progress": 95, "tag": target_tag},
+    )
+
     # === Zapis raportu ===
     self.update_state(
         state="PROGRESS",
         meta={"step": "persisting", "stage_pl": "Zapisywanie raportu", "progress": 95, "tag": target_tag},
     )
+
     try:
+        # TWARDY RYGOR: Zamieniamy listę chunków na ciąg tekstowy (JSON)
+        used_chunks_str = json.dumps(found_chunks) if found_chunks else None
+
         save_report(
             user_id=user_id,
             input_text=f"Generowanie raportu: {target_tag}",
             response_text=raw_ai_response,
             report_type="unified_esg_report",
+            used_chunks=used_chunks_str  # WYSYŁAMY CHUNKI DO REPOZYTORIUM
         )
     except Exception as e:
         logging.warning(f"Nie udało się zapisać raportu do bazy: {e}")
