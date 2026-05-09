@@ -237,7 +237,7 @@ def generate_report_task(
             user_id=user_id,
             input_text=f"Generowanie raportu: {target_tag}",
             response_text=raw_ai_response,
-            report_type="unified_esg_report",
+            report_type=target_tag,
             used_chunks=used_chunks_str  # WYSYŁAMY CHUNKI DO REPOZYTORIUM
         )
     except Exception as e:
