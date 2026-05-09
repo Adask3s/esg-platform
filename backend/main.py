@@ -6,14 +6,14 @@ import tempfile
 import shutil
 from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response, APIRouter
-from typing import List, Optional
+from typing import List, Optional, Literal
 from fastapi.middleware.cors import CORSMiddleware
 from database.report_repo import save_report
 from database.knowledge_service import add_document_to_knowledge_base, check_knowledge_document_hash
 from database.user_documents_service import check_user_document_hash
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk, calculate_file_hash
 from .utils.pdf_generator import ReportData, generate_report_pdf
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import logging
 import json
 
@@ -514,21 +514,22 @@ def get_status(
 # REAL ENDPOINTS (NO MOCKS)
 # ---------------------------------------------------------
 
-class ReportRequest(BaseModel):
-    tag: Optional[str] = None  # Oczekiwane: "Environmental", "Social", "Governance" lub brak
-
+# ============== DEFINICJA TWARDEGO KONTRAKTU DLA FRONTENDU dla generowania raportów ===============
+class ReportGenerateRequest(BaseModel):
+    report_scope: Literal["Environmental", "Social", "Governance", "ESG"] = Field(..., description="Zakres raportu. Dozwolone wyłącznie pełne nazwy: Environmental, Social, Governance, ESG")
 
 @app.post("/report/generate")
-async def generate_report(request: ReportRequest, user=Depends(get_current_user)):
+async def generate_report(request: ReportGenerateRequest, user=Depends(get_current_user)):
     """
     Asynchroniczne generowanie raportu ESG przez Celery.
     Zwraca task_id; pełny raport JSON pobierasz przez GET /status/{task_id} (pole "result").
+    Wymaga parametru 'report_scope' w body.
     """
     if not user or 'id' not in user:
         raise HTTPException(status_code=401, detail="Brak autoryzacji. Musisz być zalogowany.")
 
     user_id = str(user['id'])
-    async_result = generate_report_task.delay(user_id, request.tag)
+    async_result = generate_report_task.delay(user_id, request.report_scope)
     _register_task_owner(async_result.id, user_id)
 
     return {
