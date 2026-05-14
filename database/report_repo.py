@@ -52,3 +52,25 @@ def get_report_by_id(report_id, user_id):
             "used_chunks": row[5]
         }
     return None
+
+# =========== FUNKCJA DO USUWANIA WYGENEROWANEGO RAPORTU UŻYTKOWNIKA ===============
+def delete_report(report_id: str, user_id: str) -> bool:
+    """Usuwa raport z bazy. Zwraca True jeśli usunięto, False jeśli raport nie istniał."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            DELETE FROM reports
+            WHERE id = %s AND user_id = %s;
+        """, (report_id, user_id))
+
+        deleted_count = cur.rowcount
+        conn.commit()
+
+        return deleted_count > 0
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        cur.close()
+        conn.close()
