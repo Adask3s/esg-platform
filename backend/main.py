@@ -972,3 +972,29 @@ async def get_single_report_endpoint(report_id: str, user_id: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd serwera: {str(e)}")
+
+# =============== ENPOINT DO USUWANIA WYGENEROWANEGO JUŻ RAPORTU UŻYTKOWNIKA ===============
+@app.delete("/reports/{report_id}", status_code=204, tags=["Reports"])
+def delete_single_report_endpoint(report_id: str, user=Depends(get_current_user)):
+    """Usuwa wybrany raport z historii użytkownika."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Brak autoryzacji.")
+
+    user_id = str(user['id'])
+
+    # Import funkcji z repozytorium (upewnij się, że ścieżka się zgadza z Twoim plikiem)
+    try:
+        from database.report_repo import delete_report
+    except ImportError:
+        from backend.database.report_repo import delete_report
+
+    try:
+        success = delete_report(report_id, user_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Raport nie istnieje lub nie masz do niego dostępu.")
+
+        return None  # HTTP 204 No Content
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd bazy danych: {str(e)}")
