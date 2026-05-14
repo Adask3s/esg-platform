@@ -122,14 +122,14 @@ def test_user_documents_upload_rejects_duplicate_file(client, monkeypatch):
 
 def test_report_generate_requires_user_id(client):
     set_auth_user({"role": "user"})
-    response = client.post("/report/generate", json={"tag": "Environmental"})
+    response = client.post("/report/generate", json={"report_scope": "Environmental"})
     assert response.status_code == 401
 
 
 def test_report_generate_queued_for_valid_user(client, monkeypatch):
     set_auth_user({"id": "u1", "role": "user"})
-    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, tag: SimpleNamespace(id="rep-1"))
+    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, report_scope: SimpleNamespace(id="rep-1"))
 
-    response = client.post("/report/generate", json={"tag": "Environmental"})
+    response = client.post("/report/generate", json={"report_scope": "Environmental"})
     assert response.status_code == 200
     assert response.json()["task_id"] == "rep-1"
