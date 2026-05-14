@@ -1,12 +1,10 @@
 import requests
 import sys
-import os
+import time
 
 # Konfiguracja
 BASE_URL = "http://127.0.0.1:8000"
-# Podaj dokładną ścieżkę do swojego pliku PDF
-PDF_PATH = "RAPORT-ZRÓWNOWAŻONEGO-ROZWOJU-_ESG_.pdf"
-TEST_TAG = "Environmental"
+TEST_TAG = sys.argv[1] if len(sys.argv) > 1 else "Environmental"
 
 
 def print_step(step_num, message):
@@ -14,22 +12,48 @@ def print_step(step_num, message):
 
 
 def print_success(message):
-    print(f"  ✅ SUKCES: {message}")
+    print(f"  SUKCES: {message}")
 
 
 def fail_test(stage, reason, details=""):
-    print(f"\n  ❌ BŁĄD KRYTYCZNY NA ETAPIE: {stage}")
+    print(f"\n  BLAD KRYTYCZNY NA ETAPIE: {stage}")
     print(f"  Przyczyna: {reason}")
     if details:
         print(f"  Szczegóły serwera: {details}")
     sys.exit(1)
 
 
-def run_e2e_test():
-    print("=== ROZPOCZĘCIE TESTU INTEGRACYJNEGO E2E ===")
+def wait_for_task(task_id, headers, expected_filename=None, timeout_seconds=300, poll_seconds=2):
+    status_url = f"{BASE_URL}/status/{task_id}"
+    deadline = time.time() + timeout_seconds
 
-    if not os.path.exists(PDF_PATH):
-        fail_test("Przygotowanie", f"Nie znaleziono pliku PDF pod ścieżką: {PDF_PATH}")
+    while time.time() < deadline:
+        response = requests.get(status_url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            fail_test("Status", f"Serwer zwrocil kod bledu {response.status_code}", response.text)
+
+        payload = response.json()
+        state = payload.get("state")
+        progress = payload.get("progress")
+        stage_pl = payload.get("stage_pl")
+        print(f"  status={state}, progress={progress}, etap={stage_pl}")
+
+        if expected_filename and payload.get("filename") and payload.get("filename") != expected_filename:
+            fail_test("Status", "Zwrocono nieoczekiwana nazwe pliku.", payload)
+
+        if state == "SUCCESS":
+            return payload
+
+        if state == "FAILURE":
+            fail_test("Celery", "Task zakończył się błędem.", payload)
+
+        time.sleep(poll_seconds)
+
+    fail_test("Celery", f"Task nie zakonczyl sie w ciagu {timeout_seconds} sekund.")
+
+
+def run_e2e_test():
+    print("=== ROZPOCZECIE TESTU INTEGRACYJNEGO E2E ===")
 
     # ---------------------------------------------------------
     # KROK 0: LOGOWANIE I POBRANIE TOKENA JWT
@@ -52,13 +76,13 @@ def run_e2e_test():
     auth_response = requests.post(auth_url, data=auth_data)
 
     if auth_response.status_code != 200:
-        fail_test("Autoryzacja", f"Nie udało się zalogować. Kod błędu: {auth_response.status_code}", auth_response.text)
+        fail_test("Autoryzacja", f"Nie udalo sie zalogowac. Kod bledu: {auth_response.status_code}", auth_response.text)
 
     token = auth_response.json().get("access_token")
     if not token:
-        fail_test("Autoryzacja", "Serwer zwrócił kod 200, ale nie przekazał pola 'access_token'.", auth_response.json())
+        fail_test("Autoryzacja", "Serwer zwrocil kod 200, ale nie przekazal pola 'access_token'.", auth_response.json())
 
-    print_success("Token JWT pobrany pomyślnie.")
+    print_success("Token JWT pobrany pomyslnie.")
 
     # Przygotowanie nagłówka z tokenem dla kolejnych endpointów
     headers = {
@@ -66,78 +90,49 @@ def run_e2e_test():
     }
 
     # ---------------------------------------------------------
-    # KROK 1: UPLOAD & EMBEDDING
+    # KROK 1: ASYNC CELERY TASK — REPORT GENERATION
     # ---------------------------------------------------------
-    print_step(1, f"Wysyłanie pliku '{PDF_PATH}' z tagiem '{TEST_TAG}'")
+    print_step(1, f"Uruchamianie taska /report/generate dla scope '{TEST_TAG}'")
 
-    upload_url = f"{BASE_URL}/user/documents/upload"
+    report_url = f"{BASE_URL}/report/generate"
     try:
-        with open(PDF_PATH, 'rb') as f:
-            files = {'file': (os.path.basename(PDF_PATH), f, 'application/pdf')}
-            data = {'tag': TEST_TAG}
-
-            # WSTRZYKUJEMY NAGŁÓWEK AUTORYZACYJNY TUTAJ!
-            response = requests.post(upload_url, headers=headers, files=files, data=data)
+        response = requests.post(report_url, headers=headers, json={"report_scope": TEST_TAG}, timeout=30)
     except requests.exceptions.ConnectionError:
-        fail_test("Upload", "Nie można połączyć się z serwerem. Czy Uvicorn jest uruchomiony?")
+        fail_test("Raport", "Nie mozna polaczyc sie z serwerem. Czy Uvicorn jest uruchomiony?")
 
     if response.status_code != 200:
-        fail_test("Upload", f"Serwer zwrócił kod błędu {response.status_code}", response.text)
+        fail_test("Raport", f"Serwer zwrocil kod bledu {response.status_code}", response.text)
 
     res_json = response.json()
+    task_id = res_json.get("task_id")
+    if not task_id:
+        fail_test("Raport", "Serwer nie zwrocil task_id.", res_json)
 
-    if res_json.get("status") != "success":
-        fail_test("Upload", "Status w JSON nie jest 'success'", res_json)
+    print_success(f"Task raportu w kolejce: {task_id}")
 
-    details = res_json.get("details", {})
-    chunks_processed = details.get("chunks_processed", 0)
-    if chunks_processed == 0:
-        fail_test("Chunkowanie", "Serwer zwrócił 0 przetworzonych chunków. Plik może być pusty.", res_json)
+    status_json = wait_for_task(task_id, headers)
+    result = status_json.get("result") or {}
+    if not isinstance(result, dict):
+        fail_test("Celery", "Wynik taska ma nieoczekiwany format.", status_json)
 
-    print_success(f"Plik wgrany poprawnie. Utworzono chunków: {chunks_processed}.")
+    if result.get("status") != "success":
+        fail_test("Raport", "Task zakonczyl sie, ale nie zwrocil statusu success.", status_json)
 
-    # ---------------------------------------------------------
-    # KROK 2: RETRIEVAL & PROMPT GENERATION (CHAT/ASK)
-    # ---------------------------------------------------------
-    print_step(2, "Wysyłanie zapytania RAG (Test Context Injection)")
+    data = result.get("data") or {}
+    if not isinstance(data, dict):
+        fail_test("Raport", "Pole data ma nieoczekiwany format.", status_json)
 
-    ask_url = f"{BASE_URL}/chat/ask"
-    payload = {
-        "query": None,
-        "tag": TEST_TAG
-    }
+    if not data.get("wskazniki_liczbowe"):
+        fail_test("Raport", "Raport nie zawiera wskaznikow liczbowych.", status_json)
 
-    # Zostawiam tu nagłówek profilaktycznie, gdybyście dodali Depends() do /chat/ask
-    response = requests.post(ask_url, headers=headers, json=payload)
+    if not data.get("wdrozone_polityki_i_dzialania"):
+        fail_test("Raport", "Raport nie zawiera listy polityk i dzialan.", status_json)
 
-    if response.status_code != 200:
-        fail_test("Retrieval/Ask", f"Serwer zwrócił kod błędu {response.status_code}", response.text)
-
-    ask_json = response.json()
-
-    # ---------------------------------------------------------
-    # KROK 3: WERYFIKACJA LOGIKI I ODPOWIEDZI AI
-    # ---------------------------------------------------------
-    print_step(3, "Weryfikacja jakości wygenerowanego promptu i odpowiedzi AI")
-
-    debug_prompt = ask_json.get("debug_prompt", "")
-    ai_answer = ask_json.get("ai_answer", "")
-
-    if "UWAGA: Skup się w swojej analizie wyłącznie na aspekcie" not in debug_prompt:
-        fail_test("Prompt Builder", "Brak kluczowej instrukcji skupienia się na Tagu w wygenerowanym prompcie.")
-
-    if "Brak pasujących fragmentów w bazie danych" in debug_prompt:
-        fail_test("Wyszukiwanie SQL",
-                  "Baza nie znalazła chunków. Sprawdź parametry Threshold, tagi w bazie lub funkcję SQL.")
-
-    if not ai_answer or len(ai_answer.strip()) < 50:
-        fail_test("Odpowiedź AI", "Odpowiedź od OpenAI jest pusta lub podejrzanie krótka.", ask_json)
-
-    print_success("Prompt został zbudowany prawidłowo.")
-    print_success("OpenAI zwróciło poprawny, wygenerowany raport.")
+    print_success("Task Celery zakonczony poprawnie i zwrocil pelny raport ESG.")
+    print_success(f"Liczba wskaznikow: {len(data.get('wskazniki_liczbowe', []))}")
 
     print("\n=== PODSUMOWANIE ===")
-    print("Test E2E przeszedł w 100% pomyślnie. Pipeline działa stabilnie.")
+    print("Test E2E przeszedl w 100% pomyslnie. Celery wygenerowal raport i status zakonczyl sie SUCCESS.")
 
 
 if __name__ == "__main__":
