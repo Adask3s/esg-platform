@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "../App.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const CHAPTERS = [
-  { key: "Environmental", label: "Environmental Impact", sectionId: "section-environmental" },
-  { key: "Social", label: "Social Responsibility", sectionId: "section-social" },
-  { key: "Governance", label: "Governance & Ethics", sectionId: "section-governance" },
+  { key: "Environmental", label: "Executive Summary", sectionId: "section-environmental" },
+  { key: "Social", label: "Detailed Analysis", sectionId: "section-social" },
+  { key: "Governance", label: "Risks & Compliance", sectionId: "section-governance" },
 ];
+
+const LOADING_STATES = new Set(["QUEUED", "PENDING", "STARTED", "PROGRESS", "RETRY"]);
 
 function mapTagToApi(tag) {
   if (!tag) return "ESG";
@@ -20,11 +22,62 @@ function mapTagToApi(tag) {
 }
 
 function formatIndicator(indicator) {
-  if (!indicator) return "No metric available yet.";
+  if (!indicator) return "Metric extraction in progress.";
   const name = indicator.nazwa || "Indicator";
   const value = indicator.wartosc ?? "-";
   const unit = indicator.jednostka ? ` ${indicator.jednostka}` : "";
   return `${name}: ${value}${unit}`;
+}
+
+function ReportList({ items, emptyText }) {
+  const cleaned = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!cleaned.length) {
+    return <p className="ai-report-muted">{emptyText}</p>;
+  }
+
+  return (
+    <ul className="ai-report-list">
+      {cleaned.map((item, index) => (
+        <li key={`${String(item).slice(0, 42)}-${index}`}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function MetricList({ indicators, isGenerating }) {
+  const cleaned = Array.isArray(indicators) ? indicators.filter(Boolean) : [];
+  if (!cleaned.length) {
+    return (
+      <div className={`ai-report-metric-list ${isGenerating ? "is-loading" : ""}`}>
+        <div className="ai-report-metric-row">
+          <strong>{isGenerating ? "Extracting metrics..." : "No numeric metrics found."}</strong>
+          <span>{isGenerating ? "RAG is searching source documents." : "Check source data or choose another scope."}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ai-report-metric-list">
+      {cleaned.slice(0, 8).map((indicator, index) => (
+        <div className="ai-report-metric-row" key={`${indicator.nazwa || "metric"}-${index}`}>
+          <strong>{indicator.nazwa || "Indicator"}</strong>
+          <span>
+            {indicator.wartosc ?? "-"}
+            {indicator.jednostka ? ` ${indicator.jednostka}` : ""}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function filenameFromDisposition(disposition) {
+  if (!disposition) return "raport_ESG.pdf";
+  const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch?.[1]) return decodeURIComponent(utfMatch[1]);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1] || "raport_ESG.pdf";
 }
 
 export default function AIReports() {
@@ -33,11 +86,16 @@ export default function AIReports() {
   const [taskId, setTaskId] = useState(null);
   const [taskState, setTaskState] = useState("IDLE");
   const [taskProgress, setTaskProgress] = useState(0);
+  const [taskStagePl, setTaskStagePl] = useState("");
   const [error, setError] = useState("");
+  const [pdfStatus, setPdfStatus] = useState("");
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [reportResult, setReportResult] = useState(null);
+  const [reportMeta, setReportMeta] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
   const activeReportDoc = location.state?.doc || null;
+  const requestedScope = location.state?.scope || mapTagToApi(activeReportDoc?.tag);
   const reportSourceLabel = activeReportDoc?.name || activeReportDoc?.filename || "All uploaded documents";
   const token = localStorage.getItem("token");
   const environmentalRef = useRef(null);
@@ -47,9 +105,18 @@ export default function AIReports() {
   const indicators = reportResult?.wskazniki_liczbowe || [];
   const actions = reportResult?.wdrozone_polityki_i_dzialania || [];
   const risks = reportResult?.zidentyfikowane_ryzyka || [];
+  const executiveSummary = reportResult?.streszczenie_wykonawcze || "";
+  const methodology = reportResult?.zakres_i_metodyka || "";
+  const detailedAnalysis = reportResult?.szczegolowa_analiza || [];
+  const dataGaps = reportResult?.luki_w_danych || [];
+  const recommendations = reportResult?.rekomendacje || [];
+  const standardCompliance = reportResult?.zgodnosc_ze_standardami || [];
   const legalSummary = reportResult?.wnioski_i_zgodnosc_prawna || "";
+  const isGenerating = LOADING_STATES.has(taskState);
+  const isPartialSuccess = taskState === "SUCCESS" && reportMeta?.status === "partial_success";
+  const partialMessage = reportMeta?.message || "No source data found for this report scope.";
 
-  const launchReportGeneration = async (tag) => {
+  const launchReportGeneration = useCallback(async (tag) => {
     if (!token) {
       navigate("/login");
       return;
@@ -60,7 +127,10 @@ export default function AIReports() {
       setTaskId(null);
       setTaskState("QUEUED");
       setTaskProgress(0);
+      setTaskStagePl("Kolejkowanie zadania");
       setReportResult(null);
+      setReportMeta(null);
+      setPdfStatus("");
 
       const response = await fetch(`${API_URL}/report/generate`, {
         method: "POST",
@@ -68,7 +138,7 @@ export default function AIReports() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ tag }),
+        body: JSON.stringify({ report_scope: tag }),
       });
 
       const data = await response.json();
@@ -78,16 +148,17 @@ export default function AIReports() {
 
       setTaskId(data.task_id);
       setTaskState("PENDING");
+      setTaskStagePl("Oczekiwanie na worker Celery");
     } catch (err) {
       setTaskState("FAILURE");
+      setTaskStagePl("");
       setError(err.message || "Unknown error during report generation.");
     }
-  };
+  }, [navigate, token]);
 
   useEffect(() => {
-    const initialTag = mapTagToApi(activeReportDoc?.tag);
-    launchReportGeneration(initialTag);
-  }, []);
+    launchReportGeneration(requestedScope);
+  }, [launchReportGeneration, requestedScope]);
 
   useEffect(() => {
     if (!taskId || !token) return;
@@ -110,15 +181,21 @@ export default function AIReports() {
 
         setTaskState(data.state || "PENDING");
         setTaskProgress(Number.isFinite(data.progress) ? data.progress : 0);
+        setTaskStagePl(data.stage_pl || data.stage || "Przetwarzanie");
 
         if (data.state === "SUCCESS") {
-          const payload = data?.result?.data || null;
+          const result = data?.result || null;
+          const payload = result?.data || null;
+          setReportMeta(result);
           setReportResult(payload);
+          setPdfStatus(result?.status === "partial_success" ? "Empty report PDF ready for export." : "Report ready for PDF export.");
+          setTaskStagePl("Gotowe");
           clearInterval(intervalId);
         }
 
         if (data.state === "FAILURE") {
           setError(data?.error?.message || "Report generation failed.");
+          setTaskStagePl("Błąd generowania");
           clearInterval(intervalId);
         }
       } catch (err) {
@@ -168,6 +245,52 @@ export default function AIReports() {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const downloadGeneratedPdf = async () => {
+    if (!token) {
+      navigate("/login");
+      return;
+    }
+
+    if (!taskId || taskState !== "SUCCESS") {
+      setError("Report PDF is available after the background task reaches SUCCESS.");
+      return;
+    }
+
+    try {
+      setError("");
+      setPdfStatus("Preparing PDF...");
+      setIsDownloadingPdf(true);
+
+      const response = await fetch(`${API_URL}/report/download/${taskId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.detail || `PDF download failed (${response.status}).`);
+      }
+
+      const blob = await response.blob();
+      const filename = filenameFromDisposition(response.headers.get("Content-Disposition"));
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setPdfStatus("PDF downloaded.");
+    } catch (err) {
+      setPdfStatus("");
+      setError(err.message || "Unexpected PDF download error.");
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   return (
     <div className="ai-report-shell">
       <header className="ai-report-topbar">
@@ -199,51 +322,96 @@ export default function AIReports() {
           <div className="ai-report-stage">
             <article className="ai-report-page">
               <div className="ai-report-model-pill">GPT-4 POWERED</div>
-              <h1>Annual ESG Performance Report - 2025</h1>
+              <h1>{requestedScope} Performance Report - 2025</h1>
               <div className="ai-report-rule" />
 
+              {isGenerating ? (
+                <div className="ai-report-loading-panel" role="status" aria-live="polite">
+                  <div className="ai-report-spinner" aria-hidden="true" />
+                  <div>
+                    <strong>Generowanie raportu...</strong>
+                    <span>{taskStagePl || "Analiza dokumentów i kontekstu RAG"}</span>
+                  </div>
+                  <div className="ai-report-loading-bar">
+                    <div style={{ width: `${Math.max(5, taskProgress)}%` }} />
+                  </div>
+                  <p>
+                    Celery pracuje w tle. Raport pojawi się automatycznie po zakończeniu zadania.
+                  </p>
+                </div>
+              ) : null}
+
+              {isPartialSuccess ? (
+                <div className="ai-report-empty-panel">
+                  <strong>Brak danych dla zakresu {requestedScope}</strong>
+                  <p>{partialMessage}</p>
+                </div>
+              ) : null}
+
               <section ref={environmentalRef} id="section-environmental" className="ai-report-section-block">
-                <h2>Environmental Impact</h2>
+                <h2>Executive Summary</h2>
                 <p>
-                  {legalSummary ||
-                    "Generating a grounded summary from your uploaded documents and knowledge base. This section updates automatically once the background task is complete."}
+                  {isGenerating
+                    ? "System analizuje dokumenty użytkownika, pobiera pasujące chunki i buduje prompt raportowy."
+                    : executiveSummary || legalSummary || partialMessage}
                 </p>
-                <p className="ai-report-highlight">{formatIndicator(indicators[0])}</p>
+                <p className="ai-report-highlight">
+                  Scope: {requestedScope} · Status: {taskState} · {taskProgress}%
+                </p>
                 <p>
-                  {actions.length
-                    ? actions.slice(0, 2).join(" ")
-                    : "Policy and action details will be listed here after the report task reaches SUCCESS."}
+                  {methodology ||
+                    (isGenerating
+                      ? "Metodyka i ograniczenia danych zostaną pokazane po zakończeniu generowania."
+                      : "Brak opisu metodyki w odpowiedzi modelu.")}
                 </p>
               </section>
 
               <section ref={socialRef} id="section-social" className="ai-report-section-block">
-                <h2>Social Responsibility</h2>
-                <p>
-                  {actions.length
-                    ? actions.join(" ")
-                    : "No social actions extracted yet. Generate a dedicated social report to fill this section."}
-                </p>
-                <p className="ai-report-highlight">{formatIndicator(indicators[1])}</p>
-                <p>
-                  This chapter captures workforce impact, safety and development indicators sourced from uploaded
-                  documents.
-                </p>
+                <h2>Detailed Analysis</h2>
+                <MetricList indicators={indicators} isGenerating={isGenerating} />
+                <ReportList
+                  items={detailedAnalysis}
+                  emptyText={
+                    isGenerating
+                      ? "Szczegółowa analiza pojawi się po zakończeniu zadania."
+                      : "Brak szczegółowej analizy w odpowiedzi modelu."
+                  }
+                />
+                <h3>Implemented actions</h3>
+                <ReportList
+                  items={actions}
+                  emptyText={
+                    isGenerating
+                      ? "Działania i polityki są jeszcze ekstrahowane."
+                      : "Nie znaleziono działań ani polityk dla tego zakresu."
+                  }
+                />
               </section>
 
               <section ref={governanceRef} id="section-governance" className="ai-report-section-block">
-                <h2>Governance &amp; Ethics</h2>
-                <p>
-                  {risks.length
-                    ? risks.join(" ")
-                    : "No governance risks extracted yet. Generate a dedicated governance report to fill this section."}
-                </p>
-                <p className="ai-report-highlight">{formatIndicator(indicators[2])}</p>
-                <p>
-                  This chapter summarizes compliance posture, controls and governance-related risk observations.
-                </p>
+                <h2>Risks, Recommendations &amp; Compliance</h2>
+                <h3>Risks</h3>
+                <ReportList
+                  items={risks}
+                  emptyText={isGenerating ? "Ryzyka są jeszcze identyfikowane." : "Nie znaleziono ryzyk dla tego zakresu."}
+                />
+                <h3>Data gaps</h3>
+                <ReportList
+                  items={dataGaps}
+                  emptyText={isGenerating ? "Luki danych są jeszcze oceniane." : "Brak wskazanych luk danych."}
+                />
+                <h3>Recommendations</h3>
+                <ReportList
+                  items={recommendations}
+                  emptyText={isGenerating ? "Rekomendacje zostaną wygenerowane po analizie." : "Brak rekomendacji."}
+                />
+                <h3>Standards and legal context</h3>
+                <ReportList
+                  items={standardCompliance}
+                  emptyText={legalSummary || "Brak oceny zgodności ze standardami."}
+                />
               </section>
 
-              <div className="ai-report-placeholder" aria-hidden="true" />
               <p className="ai-report-page-footer">TASK: {taskState} · {taskProgress}%</p>
             </article>
           </div>
@@ -264,14 +432,23 @@ export default function AIReports() {
             aria-expanded={ragSidebarOpen}
           >
             <span className="ai-report-insight-title">AI INSIGHT</span>
-            <span className="ai-report-insight-copy">{legalSummary || "Waiting for generated insight"}</span>
+            <span className="ai-report-insight-copy">
+              {isGenerating ? taskStagePl || "Generating report" : legalSummary || executiveSummary || partialMessage}
+            </span>
             <span className="ai-report-insight-btn">Update Section</span>
           </button>
         </section>
 
         <aside className={`ai-report-rag ${ragSidebarOpen ? "is-open" : ""}`}>
-          <div className="ai-report-accuracy">96%</div>
-          <p className="ai-report-accuracy-label">GROUNDING ACCURACY</p>
+          <div className="ai-report-accuracy">{isGenerating ? `${taskProgress}%` : "RAG"}</div>
+          <p className="ai-report-accuracy-label">
+            {isGenerating ? "GENERATION PROGRESS" : "GROUNDING CONTEXT"}
+          </p>
+          <p className="ai-report-side-label">TASK STATUS</p>
+          <div className="ai-report-citation">
+            <strong>{taskState}</strong>
+            <span>{taskStagePl || reportMeta?.applied_filter || "Ready"}</span>
+          </div>
 
           <p className="ai-report-side-label">ACTIVE CITATIONS</p>
           {(indicators.length ? indicators : [{ nazwa: "No extracted metric yet" }]).slice(0, 3).map((item, idx) => (
@@ -297,8 +474,14 @@ export default function AIReports() {
           <button type="button" className="save-btn">
             Save Draft
           </button>
-          <button type="button" className="export-btn">
-            Finalize &amp; Export PDF
+          {pdfStatus ? <span className="pdf-status">{pdfStatus}</span> : null}
+          <button
+            type="button"
+            className="export-btn"
+            onClick={downloadGeneratedPdf}
+            disabled={taskState !== "SUCCESS" || isDownloadingPdf}
+          >
+            {isDownloadingPdf ? "Preparing PDF..." : "Finalize & Export PDF"}
           </button>
         </div>
       </footer>

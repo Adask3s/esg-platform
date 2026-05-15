@@ -353,6 +353,77 @@ def test_report_generate_queued(client, monkeypatch):
     assert response.json()["task_id"] == "report-1"
 
 
+def test_report_download_pdf_success(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main, "_check_task_owner", lambda task_id, user_id: True)
+    used_chunks = ["--- DOKUMENT: raport.pdf ---\nFragment zrodlowy."]
+    captured = {}
+
+    class FakeAsyncResult:
+        def __init__(self, task_id, app):
+            self.state = "SUCCESS"
+            self.result = {
+                "data": {
+                    "kategoria": "Environmental",
+                    "wskazniki_liczbowe": [{"nazwa": "Emisje CO2", "wartosc": 12.5, "jednostka": "tCO2e"}],
+                    "wdrozone_polityki_i_dzialania": ["Polityka recyklingu"],
+                    "zidentyfikowane_ryzyka": ["Ryzyko braku danych"],
+                    "wnioski_i_zgodnosc_prawna": "Wniosek testowy.",
+                },
+                "used_chunks": used_chunks,
+            }
+
+    def fake_generate_report_pdf(report_data, used_chunks=None):
+        captured["category"] = report_data.kategoria
+        captured["used_chunks"] = used_chunks
+        return b"%PDF-fake"
+
+    monkeypatch.setattr(main, "AsyncResult", FakeAsyncResult)
+    monkeypatch.setattr(main, "generate_report_pdf", fake_generate_report_pdf)
+
+    response = client.get("/report/download/report-1")
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF-fake"
+    assert response.headers["content-type"] == "application/pdf"
+    assert 'filename="raport_Environmental.pdf"' in response.headers["content-disposition"]
+    assert captured == {"category": "Environmental", "used_chunks": used_chunks}
+
+
+def test_report_download_pdf_handles_partial_success_without_data(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main, "_check_task_owner", lambda task_id, user_id: True)
+    captured = {}
+
+    class FakeAsyncResult:
+        def __init__(self, task_id, app):
+            self.state = "SUCCESS"
+            self.result = {
+                "status": "partial_success",
+                "kategoria": "Social",
+                "message": "Brak danych w dokumentach zrodlowych dla tego obszaru.",
+                "used_chunks": [],
+                "data": None,
+            }
+
+    def fake_generate_report_pdf(report_data, used_chunks=None):
+        captured["category"] = report_data.kategoria
+        captured["summary"] = report_data.wnioski_i_zgodnosc_prawna
+        captured["used_chunks"] = used_chunks
+        return b"%PDF-empty"
+
+    monkeypatch.setattr(main, "AsyncResult", FakeAsyncResult)
+    monkeypatch.setattr(main, "generate_report_pdf", fake_generate_report_pdf)
+
+    response = client.get("/report/download/report-empty")
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF-empty"
+    assert captured["category"] == "Social"
+    assert captured["summary"] == "Brak danych w dokumentach zrodlowych dla tego obszaru."
+    assert captured["used_chunks"] == []
+
+
 # -------------------------
 # Knowledge endpoints
 # -------------------------

@@ -88,12 +88,19 @@ Reports are produced as structured JSON by the LLM and rendered to PDF on demand
 | Field | Type | Description |
 |-------|------|-------------|
 | `kategoria` | str | ESG category (Environmental, Social, Governance, or general ESG) |
+| `streszczenie_wykonawcze` | str | Executive summary for management |
+| `zakres_i_metodyka` | str | Scope, data sources, method and limitations |
 | `wskazniki_liczbowe` | list[`WskaznikLiczbowy`] | Numeric indicators with name, value, and unit |
+| `szczegolowa_analiza` | list[str] | Longer analytical paragraphs grounded in company documents |
 | `wdrozone_polityki_i_dzialania` | list[str] | Implemented policies and actions |
 | `zidentyfikowane_ryzyka` | list[str] | Identified risks |
+| `luki_w_danych` | list[str] | Missing data and quality limitations |
+| `rekomendacje` | list[str] | Operational or management recommendations |
+| `zgodnosc_ze_standardami` | list[str] | Standard/regulation alignment based on the knowledge base |
 | `wnioski_i_zgodnosc_prawna` | str | Conclusions and legal compliance summary |
 
 The PDF endpoint reads the cached Celery task result and converts it to a downloadable PDF without re-running the LLM.
+The richer fields are optional for backward compatibility; older task results still render through the PDF generator.
 
 ## Infrastructure
 

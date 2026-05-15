@@ -1,21 +1,45 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../App.css";
 import MultiFileUpload from "../components/MultiFileUpload";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+const REPORT_SCOPES = [
+  { value: "ESG", label: "Full ESG" },
+  { value: "Environmental", label: "Environmental" },
+  { value: "Social", label: "Social" },
+  { value: "Governance", label: "Governance" },
+];
+
+function scopeFromTag(tag, fallback = "ESG") {
+  const normalized = String(tag || "").trim().toLowerCase();
+  if (normalized.startsWith("env") || normalized === "e") return "Environmental";
+  if (normalized.startsWith("soc") || normalized === "s") return "Social";
+  if (normalized.startsWith("gov") || normalized === "g") return "Governance";
+  if (normalized === "esg") return "ESG";
+  return fallback;
+}
+
 export default function Dashboard({ user, onLogout }) {
   const [userDocuments, setUserDocuments] = useState([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [refreshingDocuments, setRefreshingDocuments] = useState(false);
   const [documentsError, setDocumentsError] = useState("");
+  const [selectedReportScope, setSelectedReportScope] = useState("ESG");
+  const hasLoadedDocuments = useRef(false);
   const navigate = useNavigate();
 
   const isLoggedIn = !!user?.token;
 
-  const refreshUserDocuments = useCallback(async () => {
+  const refreshUserDocuments = useCallback(async (options = {}) => {
     if (!isLoggedIn) return;
-    setLoadingDocuments(true);
+    const keepTableVisible = options.keepTableVisible || hasLoadedDocuments.current;
+    if (keepTableVisible) {
+      setRefreshingDocuments(true);
+    } else {
+      setLoadingDocuments(true);
+    }
     setDocumentsError("");
     try {
       const res = await fetch(`${API_URL}/documents/mine`, {
@@ -23,15 +47,20 @@ export default function Dashboard({ user, onLogout }) {
         headers: { Authorization: `Bearer ${user.token}` },
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || "Failed to load documents");
+      }
       let docs = Array.isArray(data) ? data : data?.documents || [];
       docs = docs.filter((doc) => doc.origin === "user" || !doc.origin);
       setUserDocuments(docs);
+      hasLoadedDocuments.current = true;
     } catch (err) {
       console.error("Failed to fetch documents:", err);
       setUserDocuments([]);
       setDocumentsError(err.message || "Failed to load documents");
     } finally {
       setLoadingDocuments(false);
+      setRefreshingDocuments(false);
     }
   }, [isLoggedIn, user?.token]);
 
@@ -65,8 +94,9 @@ export default function Dashboard({ user, onLogout }) {
     }
   };
 
-  const openAiReport = (doc) => {
-    navigate("/aireports", { state: { doc: doc || null } });
+  const openAiReport = (doc, explicitScope) => {
+    const scope = doc ? scopeFromTag(doc.tag, selectedReportScope) : explicitScope || selectedReportScope;
+    navigate("/aireports", { state: { doc: doc || null, scope } });
   };
 
   return (
@@ -129,7 +159,8 @@ export default function Dashboard({ user, onLogout }) {
           <section className="upload-section">
             <MultiFileUpload
               token={user.token}
-              onAllCompleted={refreshUserDocuments}
+              onFileCompleted={() => refreshUserDocuments({ keepTableVisible: true })}
+              onAllCompleted={() => refreshUserDocuments({ keepTableVisible: true })}
             />
           </section>
         )}
@@ -137,15 +168,36 @@ export default function Dashboard({ user, onLogout }) {
         <section className="history-section">
           <div className="history-header">
             <h2>Document Processing History</h2>
-            <button
-              type="button"
-              className="table-btn history-generate-btn"
-              onClick={() => openAiReport()}
-              disabled={!userDocuments.length}
-            >
-              Generate Report
-            </button>
+            <div className="history-report-controls">
+              <label className="history-scope-label" htmlFor="report-scope">
+                Scope
+              </label>
+              <select
+                id="report-scope"
+                className="history-scope-select"
+                value={selectedReportScope}
+                onChange={(event) => setSelectedReportScope(event.target.value)}
+                disabled={!userDocuments.length}
+              >
+                {REPORT_SCOPES.map((scope) => (
+                  <option key={scope.value} value={scope.value}>
+                    {scope.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="table-btn history-generate-btn"
+                onClick={() => openAiReport(null, selectedReportScope)}
+                disabled={!userDocuments.length}
+              >
+                Generate Report
+              </button>
+            </div>
           </div>
+          {refreshingDocuments ? (
+            <div className="history-refreshing">Refreshing documents...</div>
+          ) : null}
           <div className="history-table">
             <div className="history-row history-head">
               <span>File name</span>
@@ -225,7 +277,10 @@ export default function Dashboard({ user, onLogout }) {
                         : doc.tag?.[0]?.toUpperCase()
                       : "-"}
                   </span>
-                  <span>
+                  <span className="history-row-actions">
+                    <button className="table-btn" onClick={() => openAiReport(doc)}>
+                      Report
+                    </button>
                     <button className="table-btn danger" onClick={() => deleteUserDocument(doc.id)}>
                       Delete
                     </button>
