@@ -139,7 +139,8 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Podłączenie routera embeddingów (ZADANIE 2 - uporządkowany kod)
@@ -556,21 +557,31 @@ async def download_report_pdf_from_task(task_id: str, user=Depends(get_current_u
     if res.state != "SUCCESS":
         raise HTTPException(status_code=400, detail=f"Raport nie jest jeszcze gotowy lub wystąpił błąd. Aktualny status: {res.state}")
 
-    result_data = (res.result or {}).get("data")
-    if not result_data:
+    result_payload = res.result or {}
+    result_data = result_payload.get("data") if isinstance(result_payload, dict) else None
+    used_chunks = result_payload.get("used_chunks") if isinstance(result_payload, dict) else None
+    if not isinstance(result_payload, dict):
         raise HTTPException(status_code=404, detail="To zadanie zakończyło się, ale nie zawiera danych raportu (JSON).")
 
     try:
         # Rzutowanie słownika z pamięci Celery na obiekt Pydantic uzywany przez generację PDF
-        report_data = ReportData(**result_data)
+        if result_data:
+            report_data = ReportData(**result_data)
+        else:
+            report_data = ReportData(
+                kategoria=result_payload.get("kategoria") or "ESG",
+                wnioski_i_zgodnosc_prawna=result_payload.get("message") or "Brak danych źródłowych dla tego raportu.",
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd mapowania danych na PDF: {e}")
 
     try:
-        pdf_bytes = generate_report_pdf(report_data)
+        pdf_bytes = generate_report_pdf(report_data, used_chunks=used_chunks)
+        category = str(report_data.kategoria or "ESG")
+        safe_category = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in category).strip("_") or "ESG"
         
         headers = {
-            "Content-Disposition": f'attachment; filename="raport_{report_data.kategoria}.pdf"'
+            "Content-Disposition": f'attachment; filename="raport_{safe_category}.pdf"'
         }
         return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
         

@@ -11,6 +11,7 @@ FROM python:3.11-slim
 #        ale gcc zostawiamy na wypadek innych pakietów
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
+    fonts-dejavu-core \
     libglib2.0-0 \
     gcc \
     libpq-dev \

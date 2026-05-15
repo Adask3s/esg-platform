@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -20,6 +21,7 @@ env/
 
 # Parser outputs
 output_test_parser/
+tmp_uploads/
 
 # logs
 *.log

@@ -42,8 +42,26 @@ TAG_HINTS = {
 }
 
 
+def _report_filter_candidates(target_tag: str) -> list[Optional[str]]:
+    if target_tag == "ESG":
+        return [None]
+
+    aliases = {
+        "Environmental": ["Environmental", "environmental", "E", "e"],
+        "Social": ["Social", "social", "S", "s"],
+        "Governance": ["Governance", "governance", "G", "g"],
+    }
+    candidates = aliases.get(target_tag, [target_tag, target_tag.lower()])
+
+    unique_candidates: list[Optional[str]] = []
+    for candidate in candidates:
+        if candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+    return unique_candidates
+
+
 def _build_report_prompt(target_tag: str, user_context: str, kb_context: str, hint: str) -> str:
-    return f"""Jesteś bezlitosnym audytorem danych ESG. Twoim jedynym celem jest ekstrakcja TWARDYCH WYNIKÓW LICZBOWYCH konkretnej firmy dla obszaru: {target_tag}.
+    return f"""Jesteś starszym konsultantem ESG dla branży budowlanej. Przygotowujesz maksymalnie szczegółowy, profesjonalny raport dla zakresu: {target_tag}.
 
 Masz przed sobą dwa całkowicie niezależne, fizycznie oddzielone zbiory danych:
 
@@ -58,21 +76,39 @@ INSTRUKCJE KRYTYCZNE (ZŁAM JEDNĄ, A OBLEJESZ):
 2. ŚLEPOTA NA ZBIÓR 2: CAŁKOWICIE IGNORUJ wszelkie liczby, wskaźniki, żargon i przykłady ze [ZBIORU 2] przy wypełnianiu tablic. To jest tylko tło prawne. Służy Ci ono tylko do napisania sekcji "wnioski_i_zgodnosc_prawna".
 3. ZAKAZ TWORZENIA PUSTYCH WSKAŹNIKÓW (BEZWZGLĘDNY): W tablicy "wskazniki_liczbowe" mogą znaleźć się TYLKO te wskaźniki, dla których w [ZBIORZE 1] występuje KONKRETNA LICZBA (np. 450, 850, 12%).
 4. ZERO NULLI: Zabraniam używania wartości "null". Jeśli nie znasz dokładnej wartości ze ZBIORU 1, w ogóle nie dodawaj tego wskaźnika do JSON-a. Jeśli w ZBIORZE 1 nie ma twardych liczb, po prostu zostaw tablicę pustą [].
-5. SPECJALIZACJA: {hint}
+5. SZCZEGÓŁOWOŚĆ: raport ma wyglądać jak prawdziwy raport zarządczy, nie krótka notatka. Pisz pełnymi akapitami, pokazuj kontekst, ocenę istotności, implikacje i rekomendacje.
+6. ZAKRES: jeśli zakres to Environmental, Social albo Governance, trzymaj się wyłącznie tego filaru. Jeśli zakres to ESG, opisz wszystkie trzy filary.
+7. SPECJALIZACJA: {hint}
 
 OCZEKIWANA, ŚCISŁA STRUKTURA JSON (Zastąp tagi <...> faktycznymi danymi z tekstu):
 {{
   "kategoria": "{target_tag}",
+  "streszczenie_wykonawcze": "<Minimum 2-4 rozbudowane akapity po polsku: najważniejsze fakty, skala danych, ogólna ocena i najpilniejsze wnioski dla zarządu. Bez liczb spoza ZBIORU 1.>",
+  "zakres_i_metodyka": "<Opisz, jakie dokumenty i typy danych wykorzystano, jak rozdzielasz dokumenty firmy od bazy wiedzy, jakie są ograniczenia danych i dla jakiego zakresu powstał raport.>",
   "wskazniki_liczbowe": [
      {{"nazwa": "<Krótka nazwa znalezionego wskaźnika>", "wartosc": <Tylko_liczba_bez_stringów>, "jednostka": "<np. tCO2e, %, MWh>"}}
   ],
+  "szczegolowa_analiza": [
+     "<Długi akapit analityczny 1 oparty na danych firmy>",
+     "<Długi akapit analityczny 2 oparty na danych firmy>",
+     "<Długi akapit analityczny 3 oparty na danych firmy>"
+  ],
   "wdrozone_polityki_i_dzialania": [
-     "<Zidentyfikowane działanie firmy 1 ze ZBIORU 1>"
+     "<Zidentyfikowane działanie firmy 1 ze ZBIORU 1, z opisem efektu albo celu>"
   ],
   "zidentyfikowane_ryzyka": [
-     "<Zidentyfikowane ryzyko dla firmy ze ZBIORU 1>"
+     "<Zidentyfikowane ryzyko dla firmy ze ZBIORU 1 wraz z uzasadnieniem>"
   ],
-  "wnioski_i_zgodnosc_prawna": "<1-2 zdania oceniające wyniki firmy. Tutaj i TYLKO TUTAJ możesz odnieść się do tego, czy wyniki firmy ze ZBIORU 1 pasują do wymogów prawnych ze ZBIORU 2.>"
+  "luki_w_danych": [
+     "<Konkretna luka w danych albo ograniczenie wiarygodności raportu>"
+  ],
+  "rekomendacje": [
+     "<Konkretna rekomendacja zarządcza albo operacyjna wynikająca z danych>"
+  ],
+  "zgodnosc_ze_standardami": [
+     "<Ocena powiązania danych ze standardami/regulacjami z bazy wiedzy, bez kopiowania cudzych wskaźników liczbowych>"
+  ],
+  "wnioski_i_zgodnosc_prawna": "<Rozbudowane podsumowanie zgodności prawnej i gotowości raportowej: 2-4 akapity po polsku.>"
 }}
 """
 
@@ -109,22 +145,24 @@ def generate_report_task(
 
     TAG_MAPPING = {
         "E": "Environmental",
+        "e": "Environmental",
+        "environmental": "Environmental",
         "S": "Social",
+        "s": "Social",
+        "social": "Social",
         "G": "Governance",
-        "ESG": "ESG"
+        "g": "Governance",
+        "governance": "Governance",
+        "ESG": "ESG",
+        "esg": "ESG",
     }
     
     # Ustalenie kontekstu zapytania
     raw_tag = tag.strip() if tag and tag.strip() else "ESG"
     target_tag = TAG_MAPPING.get(raw_tag, raw_tag)
 
-    # TWARDY RYGOR PRODUKCYJNY DLA FRONTENDU
-    # Jeśli użytkownik klika raport główny "ESG", ściągamy filtr, by zassać wszystkie pliki z bazy (E, S, G, ESG)
-    if target_tag == "ESG":
-        db_filter_tag = None
-    else:
-        # Jeśli klika raport cząstkowy (Environmental, Social, Governance), ucinamy resztę na twardo
-        db_filter_tag = target_tag
+    filter_candidates = _report_filter_candidates(target_tag)
+    db_filter_tag = filter_candidates[0]
 
     search_query = VECTOR_QUERIES.get(target_tag, VECTOR_QUERIES["ESG"])
 
@@ -133,19 +171,26 @@ def generate_report_task(
         state="PROGRESS",
         meta={"step": "retrieving_context", "stage_pl": "Wyszukiwanie kontekstu", "progress": 30, "tag": target_tag},
     )
-    found_chunks = asyncio.run(retrieve_context_async(
-        query=search_query,
-        user_id=user_id,
-        match_count=35,
-        match_threshold=0.20,
-        filter_tag=db_filter_tag,
-    ))
+    found_chunks = []
+    for candidate in filter_candidates:
+        db_filter_tag = candidate
+        found_chunks = asyncio.run(retrieve_context_async(
+            query=search_query,
+            user_id=user_id,
+            match_count=35,
+            match_threshold=0.20,
+            filter_tag=db_filter_tag,
+        ))
+        if found_chunks:
+            break
 
     if not found_chunks:
         return {
             "status": "partial_success",
             "kategoria": target_tag,
             "message": "Brak danych w dokumentach źródłowych dla tego obszaru.",
+            "used_chunks": [],
+            "applied_filter": db_filter_tag,
             "data": None,
         }
 
@@ -248,5 +293,7 @@ def generate_report_task(
         "mode": "report_generation",
         "kategoria": target_tag,
         "rag_used": True,
+        "applied_filter": db_filter_tag,
+        "used_chunks": found_chunks,
         "data": report_json,
     }
