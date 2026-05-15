@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import "../styles/Auth.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -11,7 +10,6 @@ export default function SignUp({ onLogin }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();

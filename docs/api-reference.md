@@ -142,20 +142,20 @@ Trigger asynchronous ESG report generation.
 **Request body:**
 ```json
 {
-  "title": "string",
-  "tags": ["optional", "tag", "filters"],
-  "standard": "GRI | SASB | TCFD",
-  "document_ids": ["uuid", "..."]
+  "report_scope": "Environmental | Social | Governance | ESG"
 }
 ```
 
 **Response:**
 ```json
 {
-  "report_id": "uuid",
-  "task_id": "string"
+  "task_id": "string",
+  "status": "queued",
+  "message": "Raport jest generowany w tle. Sprawdź /status/{task_id} po wynik."
 }
 ```
+
+Partial scopes (`Environmental`, `Social`, `Governance`) filter retrieval by matching tag aliases only. `ESG` runs without a tag filter and can use all user documents. The cached task result contains a structured report payload with the legacy fields plus optional richer fields: `streszczenie_wykonawcze`, `zakres_i_metodyka`, `szczegolowa_analiza`, `luki_w_danych`, `rekomendacje`, and `zgodnosc_ze_standardami`.
 
 ### GET /report/download/{task_id}
 Download a generated report as a PDF, streamed directly from the cached Celery task result.

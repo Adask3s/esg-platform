@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "./AdminPanel.css";
 
@@ -69,7 +69,7 @@ export default function AdminPanel({ user }) {
     }));
   }, [knowledgeDocs, uploadResults]);
 
-  const loadAdminData = async () => {
+  const loadAdminData = useCallback(async () => {
     if (!isAdmin) return;
 
     setLoading(true);
@@ -110,13 +110,13 @@ export default function AdminPanel({ user }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isAdmin, user?.token]);
 
   useEffect(() => {
     if (isAdmin) {
       loadAdminData();
     }
-  }, [isAdmin, user?.token]);
+  }, [isAdmin, loadAdminData]);
 
   const preventDefaults = (event) => {
     event.preventDefault();
