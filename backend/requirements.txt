@@ -19,3 +19,4 @@ python-jose[cryptography]
 tiktoken
 flower
 reportlab
+pytest

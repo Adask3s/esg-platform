@@ -32,13 +32,14 @@ function makeItem(file) {
   };
 }
 
-export default function MultiFileUpload({ token, onAllCompleted }) {
+export default function MultiFileUpload({ token, onFileCompleted, onAllCompleted }) {
   const [items, setItems] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [openTagFor, setOpenTagFor] = useState(null);
   const inputRef = useRef(null);
   const pollTimers = useRef(new Map());
   const cancelledIds = useRef(new Set());
+  const successfulIds = useRef(new Set());
   const itemsRef = useRef(items);
   const completionNotifiedRef = useRef(false);
 
@@ -146,6 +147,7 @@ export default function MultiFileUpload({ token, onAllCompleted }) {
   }
 
   function retry(id) {
+    successfulIds.current.delete(id);
     patchItem(id, {
       phase: "queued",
       progress: 0,
@@ -280,6 +282,11 @@ export default function MultiFileUpload({ token, onAllCompleted }) {
             clearInterval(intervalId);
             pollTimers.current.delete(id);
             patchItem(id, { phase: "done", progress: 100, stagePl: "Gotowe" });
+            if (!successfulIds.current.has(id)) {
+              successfulIds.current.add(id);
+              const completedItem = itemsRef.current.find((item) => item.id === id);
+              onFileCompleted?.(completedItem || { id, taskId });
+            }
             resolve();
             return;
           }

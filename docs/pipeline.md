@@ -116,10 +116,14 @@ Report generation is a non-blocking background task. The frontend triggers `/rep
 The PDF is rendered by `backend/utils/pdf_generator.py` using ReportLab. The renderer takes the structured `ReportData` payload (built earlier by the LLM stage) and produces a styled PDF containing:
 
 - Title page with the ESG category
+- Executive summary and scope/methodology
 - A numeric indicators table (name / value / unit)
+- Detailed analysis of the selected scope
 - A bulleted list of implemented policies and actions
 - A bulleted list of identified risks
+- Data gaps, recommendations and standards/regulatory alignment
 - A conclusions and legal-compliance section
+- RAG source citations from `used_chunks`
 
 Because the LLM output is cached on the Celery result backend, downloading the PDF does **not** trigger another LLM call.
 
