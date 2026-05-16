@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -16,9 +17,12 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
+    Flowable,
+    Image,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -128,10 +132,40 @@ def _register_pdf_fonts() -> tuple[str, str]:
             pdfmetrics.registerFont(TTFont("ESG-Regular", str(regular)))
             pdfmetrics.registerFont(TTFont("ESG-Bold", str(bold)))
             return "ESG-Regular", "ESG-Bold"
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[pdf_generator] WARNING: TTF font registration failed ({exc}); "
+                "Polish glyphs (ł/ć/ż) may not render correctly with Helvetica fallback",
+                file=sys.stderr,
+            )
+            return "Helvetica", "Helvetica-Bold"
 
+    print(
+        "[pdf_generator] WARNING: TTF fonts missing or unloadable; "
+        "Polish glyphs (ł/ć/ż) may not render correctly with Helvetica fallback",
+        file=sys.stderr,
+    )
     return "Helvetica", "Helvetica-Bold"
+
+
+def _load_cover_logo() -> Optional[Image]:
+    path = os.getenv("ESG_PDF_LOGO_PATH")
+    if not path:
+        return None
+    try:
+        logo_path = Path(path)
+        if not logo_path.is_file():
+            return None
+        reader = ImageReader(str(logo_path))
+        width, height = reader.getSize()
+        if width <= 0 or height <= 0:
+            return None
+        max_w, max_h = 35 * mm, 25 * mm
+        scale = min(max_w / width, max_h / height)
+        return Image(str(logo_path), width=width * scale, height=height * scale)
+    except Exception as exc:
+        print(f"[pdf_generator] cover logo load failed: {exc}", file=sys.stderr)
+        return None
 
 
 FONT_REGULAR, FONT_BOLD = _register_pdf_fonts()
@@ -165,6 +199,55 @@ def _format_number(value: Optional[float]) -> str:
     if float(value).is_integer():
         return f"{int(value):,}".replace(",", " ")
     return f"{value:,.2f}".replace(",", " ").replace(".", ",")
+
+
+_RISK_RED = re.compile(
+    r"krytyczn|wysokie ryzyko|wysokie zagrożeni|poważn|istotn|niezgod|kara|niedopełn",
+    re.IGNORECASE,
+)
+_RISK_GOLD = re.compile(
+    r"średni|umiarkowan|możliw|potencjaln",
+    re.IGNORECASE,
+)
+
+
+def _risk_severity(text: str) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return "green"
+    if _RISK_RED.search(cleaned):
+        return "red"
+    if _RISK_GOLD.search(cleaned):
+        return "gold"
+    return "green"
+
+
+_SEVERITY_BACKGROUNDS = {
+    "red": "soft_red",
+    "gold": "soft_gold",
+    "green": "soft_green",
+}
+
+
+class OutlineEntry(Flowable):
+    """Zero-height flowable that registers a PDF bookmark + outline entry on the
+    page where it lands. Use one entry per section/subsection."""
+
+    def __init__(self, key: str, title: str, level: int = 0) -> None:
+        super().__init__()
+        self.key = key
+        self.title = title
+        self.level = level
+        self.width = 0
+        self.height = 0
+
+    def wrap(self, _availWidth, _availHeight):  # noqa: D401
+        return 0, 0
+
+    def draw(self) -> None:
+        canvas = self.canv
+        canvas.bookmarkPage(self.key)
+        canvas.addOutlineEntry(self.title, self.key, level=self.level, closed=False)
 
 
 def _styles() -> dict[str, ParagraphStyle]:
@@ -349,6 +432,65 @@ def _paragraph_flowables(text: Any, empty_message: str, styles: dict[str, Paragr
     return flowables
 
 
+def _executive_callout(text: str, styles: dict[str, ParagraphStyle]) -> Table:
+    raw = _clean_text(text)
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", raw) if part.strip()] or [raw]
+    rows = [[Paragraph(_xml_text(paragraph), styles["body"])] for paragraph in paragraphs]
+    last_row = len(rows) - 1
+    table = Table(rows, colWidths=[473], splitByRow=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), PALETTE["soft_gold"]),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, PALETTE["gold"]),
+                ("LINEABOVE", (0, 0), (-1, 0), 0.3, PALETTE["line"]),
+                ("LINEBELOW", (0, last_row), (-1, last_row), 0.3, PALETTE["line"]),
+                ("LINEAFTER", (-1, 0), (-1, -1), 0.3, PALETTE["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (0, 0), 10),
+                ("TOPPADDING", (0, 1), (0, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (0, -2), 4),
+                ("BOTTOMPADDING", (0, last_row), (-1, last_row), 10),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    return table
+
+
+def _risk_callout(text: str, severity: str, styles: dict[str, ParagraphStyle]) -> Table:
+    background_key = _SEVERITY_BACKGROUNDS.get(severity, "soft_green")
+    inner = Paragraph(_xml_text(text), styles["body"])
+    table = Table([[inner]], colWidths=[473])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), PALETTE[background_key]),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, PALETTE[severity]),
+                ("BOX", (0, 0), (-1, -1), 0.3, PALETTE["line"]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    return table
+
+
+def _risk_flowables(items: Sequence[str], styles: dict[str, ParagraphStyle]) -> list[Any]:
+    cleaned = [_clean_text(item) for item in items if _clean_text(item)]
+    if not cleaned:
+        return [Paragraph("Brak zidentyfikowanych ryzyk w dokumentach źródłowych.", styles["body_muted"])]
+    flowables: list[Any] = []
+    for item in cleaned:
+        flowables.append(_risk_callout(item, _risk_severity(item), styles))
+        flowables.append(Spacer(1, 6))
+    return flowables
+
+
 def _append_section(
     elements: list[Any],
     number: str,
@@ -360,6 +502,7 @@ def _append_section(
 ) -> None:
     if page_break_before:
         elements.append(PageBreak())
+    elements.append(OutlineEntry(f"sec_{number}", f"{number} {title}", level=0))
     elements.append(_section_title(number, title, styles))
     elements.append(Spacer(1, 10))
     elements.extend(flowables)
@@ -434,34 +577,43 @@ def _build_cover(report_data: ReportData, generated_at: str, styles: dict[str, P
         )
     )
 
-    return [
-        Spacer(1, 38),
-        Paragraph("RAPORT ESG", styles["cover_label"]),
-        Spacer(1, 10),
-        Paragraph("Raport zrównoważonego rozwoju", styles["cover_title"]),
-        Paragraph(
-            "Automatycznie wygenerowane podsumowanie danych ESG z dokumentów firmy i kontekstu bazy wiedzy.",
-            styles["cover_subtitle"],
-        ),
-        Spacer(1, 32),
-        meta_table,
-        Spacer(1, 42),
-        Table(
-            [[Paragraph("Environmental", styles["table_header"]), Paragraph("Social", styles["table_header"]), Paragraph("Governance", styles["table_header"])]],
-            colWidths=[150, 150, 150],
-            style=TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (0, 0), PALETTE["green"]),
-                    ("BACKGROUND", (1, 0), (1, 0), PALETTE["gold"]),
-                    ("BACKGROUND", (2, 0), (2, 0), PALETTE["navy"]),
-                    ("BOX", (0, 0), (-1, -1), 0.5, PALETTE["line"]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 10),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ]
+    cover: list[Any] = []
+    logo = _load_cover_logo()
+    if logo is not None:
+        cover.extend([Spacer(1, 12), logo, Spacer(1, 18)])
+    else:
+        cover.append(Spacer(1, 38))
+
+    cover.extend(
+        [
+            Paragraph("RAPORT ESG", styles["cover_label"]),
+            Spacer(1, 10),
+            Paragraph("Raport zrównoważonego rozwoju", styles["cover_title"]),
+            Paragraph(
+                "Automatycznie wygenerowane podsumowanie danych ESG z dokumentów firmy i kontekstu bazy wiedzy.",
+                styles["cover_subtitle"],
             ),
-        ),
-        PageBreak(),
-    ]
+            Spacer(1, 32),
+            meta_table,
+            Spacer(1, 42),
+            Table(
+                [[Paragraph("Environmental", styles["table_header"]), Paragraph("Social", styles["table_header"]), Paragraph("Governance", styles["table_header"])]],
+                colWidths=[150, 150, 150],
+                style=TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (0, 0), PALETTE["green"]),
+                        ("BACKGROUND", (1, 0), (1, 0), PALETTE["gold"]),
+                        ("BACKGROUND", (2, 0), (2, 0), PALETTE["navy"]),
+                        ("BOX", (0, 0), (-1, -1), 0.5, PALETTE["line"]),
+                        ("TOPPADDING", (0, 0), (-1, -1), 10),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                    ]
+                ),
+            ),
+            PageBreak(),
+        ]
+    )
+    return cover
 
 
 def _build_indicator_table(report_data: ReportData, styles: dict[str, ParagraphStyle]) -> list[Any]:
@@ -521,6 +673,7 @@ def _build_citations(used_chunks: Any, styles: dict[str, ParagraphStyle]) -> lis
             Paragraph("Fragment", styles["table_header"]),
         ]
     ]
+    flowables: list[Any] = []
     for index, citation in enumerate(citations, start=1):
         rows.append(
             [
@@ -529,6 +682,8 @@ def _build_citations(used_chunks: Any, styles: dict[str, ParagraphStyle]) -> lis
                 Paragraph(_xml_text(citation.excerpt), styles["table_cell"]),
             ]
         )
+        title = _truncate(f"Źródło {index}: {citation.source}", 80)
+        flowables.append(OutlineEntry(f"cit_{index}", title, level=1))
 
     table = Table(rows, colWidths=[32, 145, 298], repeatRows=1)
     table.setStyle(
@@ -547,7 +702,8 @@ def _build_citations(used_chunks: Any, styles: dict[str, ParagraphStyle]) -> lis
             ]
         )
     )
-    return [table]
+    flowables.append(table)
+    return flowables
 
 
 def generate_report_pdf(
@@ -557,6 +713,7 @@ def generate_report_pdf(
 ) -> bytes:
     generated_at = generated_at or datetime.now().strftime("%Y-%m-%d %H:%M")
     styles = _styles()
+    category = _clean_text(report_data.kategoria, "ESG")
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -565,7 +722,7 @@ def generate_report_pdf(
         leftMargin=22 * mm,
         topMargin=22 * mm,
         bottomMargin=26 * mm,
-        title=f"Raport ESG - {_clean_text(report_data.kategoria, 'ESG')}",
+        title=f"Raport ESG - {category}",
         author="ESG Platform",
     )
 
@@ -583,6 +740,7 @@ def generate_report_pdf(
             _clean_text(report_data.wnioski_i_zgodnosc_prawna),
         ]
     )
+    has_citations = bool(_normalize_citations(used_chunks))
 
     elements: list[Any] = []
     elements.extend(_build_cover(report_data, generated_at, styles))
@@ -590,16 +748,21 @@ def generate_report_pdf(
     executive_summary = _clean_text(report_data.streszczenie_wykonawcze) or _clean_text(
         report_data.wnioski_i_zgodnosc_prawna
     )
+    if executive_summary:
+        a1_flowables: list[Any] = [_executive_callout(executive_summary, styles)]
+    else:
+        a1_flowables = [
+            Paragraph(
+                "Brak streszczenia wykonawczego w danych raportu.",
+                styles["body_muted"],
+            )
+        ]
     _append_section(
         elements,
         "A1",
         "Streszczenie wykonawcze",
         styles,
-        _paragraph_flowables(
-            executive_summary,
-            "Brak streszczenia wykonawczego w danych raportu.",
-            styles,
-        ),
+        a1_flowables,
     )
     _append_section(
         elements,
@@ -658,9 +821,50 @@ def generate_report_pdf(
             styles,
         ),
     )
-    elements.append(PageBreak())
 
-    if not has_report_data:
+    if has_report_data:
+        elements.append(PageBreak())
+
+        elements.append(OutlineEntry("sec_01", "01 Wskaźniki liczbowe", level=0))
+        elements.append(_section_title("01", "Wskaźniki liczbowe", styles))
+        elements.append(Spacer(1, 10))
+        elements.extend(_build_indicator_table(report_data, styles))
+        elements.append(Spacer(1, 18))
+
+        elements.append(OutlineEntry("sec_02", "02 Wdrożone polityki i działania", level=0))
+        elements.append(_section_title("02", "Wdrożone polityki i działania", styles))
+        elements.append(Spacer(1, 10))
+        elements.extend(
+            _bullet_flowables(
+                report_data.wdrozone_polityki_i_dzialania,
+                "Brak zidentyfikowanych polityk lub działań w dokumentach źródłowych.",
+                styles,
+            )
+        )
+        elements.append(Spacer(1, 14))
+
+        elements.append(OutlineEntry("sec_03", "03 Zidentyfikowane ryzyka", level=0))
+        elements.append(_section_title("03", "Zidentyfikowane ryzyka", styles))
+        elements.append(Spacer(1, 10))
+        elements.extend(_risk_flowables(report_data.zidentyfikowane_ryzyka, styles))
+        elements.append(Spacer(1, 14))
+
+        elements.append(OutlineEntry("sec_04", "04 Wnioski i zgodność prawna", level=0))
+        elements.append(_section_title("04", "Wnioski i zgodność prawna", styles))
+        elements.append(Spacer(1, 10))
+        if _clean_text(report_data.wnioski_i_zgodnosc_prawna):
+            elements.append(Paragraph(_xml_text(report_data.wnioski_i_zgodnosc_prawna), styles["body"]))
+        else:
+            elements.append(Paragraph("Brak wniosków prawnych dla tego raportu.", styles["body_muted"]))
+        elements.append(Spacer(1, 18))
+
+        elements.append(OutlineEntry("sec_05", "05 Źródła i cytowania RAG", level=0))
+        elements.append(_section_title("05", "Źródła i cytowania RAG", styles))
+        elements.append(Spacer(1, 10))
+        elements.extend(_build_citations(used_chunks, styles))
+    else:
+        elements.append(PageBreak())
+        elements.append(OutlineEntry("sec_empty", "Brak wystarczających danych", level=0))
         elements.append(_section_title("!", "Brak wystarczających danych", styles))
         elements.append(Spacer(1, 10))
         elements.append(
@@ -671,47 +875,26 @@ def generate_report_pdf(
             )
         )
         elements.append(Spacer(1, 20))
+        if has_citations:
+            elements.append(OutlineEntry("sec_05", "05 Źródła i cytowania RAG", level=0))
+            elements.append(_section_title("05", "Źródła i cytowania RAG", styles))
+            elements.append(Spacer(1, 10))
+            elements.extend(_build_citations(used_chunks, styles))
 
-    elements.append(_section_title("01", "Wskaźniki liczbowe", styles))
-    elements.append(Spacer(1, 10))
-    elements.extend(_build_indicator_table(report_data, styles))
-    elements.append(Spacer(1, 18))
+    def _draw_chrome(canvas, doc, _category=category):
+        _draw_footer(canvas, doc)
+        if doc.page > 1:
+            canvas.saveState()
+            canvas.setFont(FONT_REGULAR, 7.5)
+            canvas.setFillColor(PALETTE["muted"])
+            canvas.drawString(
+                doc.leftMargin,
+                PAGE_HEIGHT - 14 * mm,
+                f"{_category} — Raport ESG",
+            )
+            canvas.restoreState()
 
-    elements.append(_section_title("02", "Wdrożone polityki i działania", styles))
-    elements.append(Spacer(1, 10))
-    elements.extend(
-        _bullet_flowables(
-            report_data.wdrozone_polityki_i_dzialania,
-            "Brak zidentyfikowanych polityk lub działań w dokumentach źródłowych.",
-            styles,
-        )
-    )
-    elements.append(Spacer(1, 14))
-
-    elements.append(_section_title("03", "Zidentyfikowane ryzyka", styles))
-    elements.append(Spacer(1, 10))
-    elements.extend(
-        _bullet_flowables(
-            report_data.zidentyfikowane_ryzyka,
-            "Brak zidentyfikowanych ryzyk w dokumentach źródłowych.",
-            styles,
-        )
-    )
-    elements.append(Spacer(1, 14))
-
-    elements.append(_section_title("04", "Wnioski i zgodność prawna", styles))
-    elements.append(Spacer(1, 10))
-    if _clean_text(report_data.wnioski_i_zgodnosc_prawna):
-        elements.append(Paragraph(_xml_text(report_data.wnioski_i_zgodnosc_prawna), styles["body"]))
-    else:
-        elements.append(Paragraph("Brak wniosków prawnych dla tego raportu.", styles["body_muted"]))
-    elements.append(Spacer(1, 18))
-
-    elements.append(_section_title("05", "Źródła i cytowania RAG", styles))
-    elements.append(Spacer(1, 10))
-    elements.extend(_build_citations(used_chunks, styles))
-
-    doc.build(elements, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    doc.build(elements, onFirstPage=_draw_chrome, onLaterPages=_draw_chrome)
 
     pdf_bytes = buffer.getvalue()
     buffer.close()
