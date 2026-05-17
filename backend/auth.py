@@ -12,9 +12,17 @@ from database.user_repo import get_user_by_username, create_user
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-SECRET_KEY = os.getenv("JWT_SECRET", "dev-secret")
+SECRET_KEY = os.getenv("JWT_SECRET")
+if not SECRET_KEY or len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET musi byc ustawiony w .env i miec min. 32 znaki. "
+        "Wygeneruj: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+    )
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+#NA RAZIE WYŁĄCZONY MOZNA WLACZYC JESLI BEDZIE POTRZEBNY
+SIGNUP_ENABLED = os.getenv("SIGNUP_ENABLED", "false").lower() == "true"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -66,23 +74,23 @@ class UserCreate(BaseModel):
 
 @router.post("/signup")
 def signup(user: UserCreate):
+    if not SIGNUP_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Rejestracja wylaczona. Skontaktuj sie z administratorem.",
+        )
     try:
-        print(f"[SIGNUP DEBUG] Received: {user.username}, {user.email}")
         existing = get_user_by_username(user.username)
         if existing:
             raise HTTPException(status_code=400, detail="Username already registered")
-        print("[SIGNUP DEBUG] Hashing password...")
         hashed = get_password_hash(user.password)
-        print(f"[SIGNUP DEBUG] Hash created, creating user in DB...")
         user_id = create_user(user.username, user.email, hashed)
-        print(f"[SIGNUP DEBUG] User created with ID: {user_id}")
         token_payload = {"sub": user.username, "user_id": str(user_id), "role": "user"}
         access_token = create_access_token(token_payload, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
         return {"access_token": access_token, "token_type": "bearer"}
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[SIGNUP ERROR] {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -111,16 +119,10 @@ def contact(contact: ContactRequest):
     In production, this should send an email or save to database
     """
     try:
-        # Log the contact request
-        print(f"[CONTACT] Email: {contact.email}, Problem: {contact.problem}")
-        
         # TODO: Send email or save to database
-        # For now, just return success
-        
         return {
             "status": "success",
             "message": "Your message has been received. We'll get back to you soon."
         }
     except Exception as e:
-        print(f"[CONTACT ERROR] {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

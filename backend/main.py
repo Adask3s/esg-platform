@@ -268,6 +268,45 @@ async def parse_upload(
 
 # Ingestion endpoints: scraping + keyword filtering + chunking
 
+def _assert_url_not_ssrf(url: str) -> None:
+    """Blokuje URL wskazujace na prywatne/wewnetrzne sieci (anty-SSRF).
+
+    Sprawdza schemat (tylko http/https), zabrania URL z osadzonym userinfo,
+    oraz odrzuca host wskazujacy (po rozwiazaniu DNS) na loopback, prywatne
+    podsieci RFC1918, link-local (vide 169.254.169.254 metadata) i multicast.
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+    import socket
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL musi uzywac http(s)://")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="URL nie moze zawierac userinfo")
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="URL bez hosta")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Nie mozna rozwiazac hosta URL")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="URL wskazuje na adres wewnetrzny/prywatny (SSRF blocked)",
+            )
+
+
 @app.post("/ingest/chunk/url")
 async def ingest_chunk_url(
     body: IngestUrlRequest = Body(...),
@@ -277,6 +316,7 @@ async def ingest_chunk_url(
     Asynchronicznie: pobiera stronę WWW, filtruje wg słów kluczowych i chunkuje.
     Zwraca task_id; pełny wynik (IngestResponse) pobierasz przez GET /status/{task_id}.
     """
+    _assert_url_not_ssrf(body.url)
     async_result = ingest_chunk_url_task.delay(
         body.url,
         body.keywords or None,
