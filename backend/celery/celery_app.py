@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import ssl
 from celery import Celery
 from dotenv import load_dotenv
 
@@ -8,6 +9,10 @@ load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
 CELERY_TIMEZONE = os.getenv("CELERY_TIMEZONE", "Europe/Warsaw")
+
+# TLS dla zarzadzanych Redisow (Upstash, AWS ElastiCache TLS) -- rediss://
+_use_tls = REDIS_URL.startswith("rediss://") or CELERY_RESULT_BACKEND.startswith("rediss://")
+_ssl_opts = {"ssl_cert_reqs": ssl.CERT_NONE} if _use_tls else None
 
 celery_app = Celery(
     "etl_backend",
@@ -19,6 +24,10 @@ celery_app = Celery(
         "backend.celery.report_tasks",
     ],
 )
+
+if _ssl_opts is not None:
+    celery_app.conf.broker_use_ssl = _ssl_opts
+    celery_app.conf.redis_backend_use_ssl = _ssl_opts
 
 celery_app.conf.update(
     # Serializacja
