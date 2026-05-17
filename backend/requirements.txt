@@ -20,3 +20,5 @@ tiktoken
 flower
 reportlab
 pytest
+honcho
+bcrypt

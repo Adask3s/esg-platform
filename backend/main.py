@@ -133,6 +133,13 @@ ALLOWED_ORIGINS = [
     "http://localhost:4173",
     "http://127.0.0.1:4173",
 ]
+# Produkcja: dodaj origin frontendu Vercel przez env var, np.:
+# ALLOWED_ORIGINS=https://esg-demo.vercel.app,https://esg-demo-git-main-xxx.vercel.app
+_extra_origins = os.getenv("ALLOWED_ORIGINS", "")
+if _extra_origins:
+    ALLOWED_ORIGINS.extend(
+        o.strip() for o in _extra_origins.split(",") if o.strip()
+    )
 
 app.add_middleware(
     CORSMiddleware,
