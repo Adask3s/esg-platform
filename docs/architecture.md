@@ -1,123 +1,119 @@
 # System Architecture
 
-## High-Level Overview
+## Overview
 
-The platform is a full-stack web application composed of four main layers: a React frontend, a FastAPI backend, an asynchronous task processing layer (Celery + Redis), and a PostgreSQL database managed through Supabase. AI capabilities are provided by the OpenAI API.
+The platform is a React + FastAPI application for ESG document ingestion, RAG
+retrieval, background report generation and PDF export.
 
-```
-+------------------+
-|    React SPA     |  User interface (Vite, React 19)
-+--------+---------+
-         |  HTTP / REST
-+--------+---------+
-|  FastAPI Backend |  Business logic, auth, routing
-+----+--------+----+
-     |        |
-     |   +----+-------+
-     |   |  Celery     |  Async task queue (parsing, embedding, LLM)
-     |   |  Workers    |
-     |   +----+--------+
-     |        |
-+----+--------+----+
-|   Supabase /     |  PostgreSQL + pgvector for embeddings
-|   PostgreSQL     |
-+------------------+
-         |
-+------------------+
-|   OpenAI API     |  Embeddings (text-embedding-ada-002) + Chat (GPT-4)
-+------------------+
+```text
+React 19 / Vite
+    |
+    | HTTP REST, JWT bearer auth
+    v
+FastAPI backend
+    |
+    | Celery tasks
+    v
+Redis broker/result backend + Celery worker/beat
+    |
+    +--> OpenAI embeddings: text-embedding-3-small
+    +--> OpenAI chat/report generation: gpt-4o-mini
+    +--> Supabase/PostgreSQL + pgvector
+    +--> PostgreSQL access through database/* repositories
 ```
 
-## Components
+## Frontend
 
-### Frontend
+- React 19, Vite and React Router DOM.
+- API base URL comes from `VITE_API_URL`; fallback is `http://localhost:8000`.
+- Optional report model badge comes from `VITE_REPORT_MODEL_LABEL`; fallback is
+  `AI POWERED`.
+- `frontend/src/components/MultiFileUpload.jsx` handles multi-file uploads,
+  per-file tags and polling `/status/{task_id}`.
+- `frontend/src/pages/Dashboard.jsx` lists user documents and starts report
+  generation for `ESG`, `Environmental`, `Social` or `Governance`.
+- `frontend/src/pages/AIReports.jsx` starts `/report/generate`, polls status and
+  downloads `/report/download/{task_id}` as a PDF blob.
 
-- **Technology:** React 19, Vite, React Router DOM 6
-- **Pages:** Login, Sign Up, Dashboard, AI Reports, Reset Password, Contact
-- **Key components:**
-  - `MultiFileUpload.jsx` — async multi-file upload widget (up to 10 files, 50 MB each, 3 concurrent uploads, automatic polling of task status at 1.5 s intervals, per-file ESG tag selection)
-  - `AIReports.jsx` — chapter-based ESG report viewer (Environmental / Social / Governance) with task status tracking and PDF download
-- **Responsibility:** Multi-file ingestion, tag selection, report viewing, PDF download, interactive chat/editing
+## Backend
 
-### Backend (FastAPI)
+- FastAPI application entrypoint: `backend/main.py`.
+- Authentication: JWT through `backend/auth.py`, with users stored in
+  `app_users`.
+- Background tasks: Celery configuration in `backend/celery/celery_app.py`.
+- Report generation: `backend/celery/report_tasks.py`.
+- Chat and ingestion tasks: `backend/celery/tasks.py`.
+- RAG retrieval: `backend/RAG/rag_retriever.py`, using Supabase RPC
+  `match_chunks2`.
+- PDF rendering: `backend/utils/pdf_generator.py`, using ReportLab.
 
-- **Technology:** Python, FastAPI, Uvicorn (ASGI)
-- **Authentication:** JWT-based (`python-jose`, `passlib[bcrypt]`)
-- **PDF generation:** ReportLab — server-side PDF synthesis from structured report data (`backend/utils/pdf_generator.py`)
-- **CORS:** allows the Vite dev server (`localhost:5173`) and Vite preview (`localhost:4173`) on both `localhost` and `127.0.0.1`
-- **Key routers:**
-  - Document ingestion and management (single + async multi-file upload)
-  - Embedding and knowledge base operations
-  - RAG-based chat and report generation (background task with PDF retrieval)
-  - Document retrieval
-
-### Asynchronous Processing (Celery + Redis)
-
-- **Broker:** Redis 7
-- **Task queues:**
+## Queues
 
 | Queue | Purpose |
 |-------|---------|
-| `default` | General tasks |
-| `parsing` | Document text extraction |
-| `embeddings` | Single-document embedding |
-| `embeddings_bulk` | Bulk embedding operations |
-| `llm` | LLM calls (report generation, chat) |
+| `default` | General background tasks |
+| `parsing` | Document parsing and ingestion |
+| `embeddings` | Single-document embedding work |
+| `embeddings_bulk` | Bulk embedding generation |
+| `llm` | Chat and report LLM calls |
 
-- **Scheduler:** Celery Beat for periodic tasks
-- **Monitoring:** Flower UI (port 5555)
+Redis is used for Celery broker/result storage. The backend also stores task
+ownership in Redis for `/status/{task_id}` and `/report/download/{task_id}`.
 
-### Database (Supabase / PostgreSQL)
+## Data Storage
 
-- **User data:** accounts, authentication
-- **Documents:** uploaded file metadata, processing status
-- **Embeddings:** `documents_embeddings` table — chunks with pgvector embeddings for user documents
-- **Knowledge base:** `knowledge_embeddings` table — pre-chunked ESG regulation fragments
-- **Chat history:** conversation records per user session
-- **Reports:** generated report storage
+Active Supabase/PostgreSQL tables used by the current code:
 
-### AI Services (OpenAI)
+- `app_users`
+- `user_documents`
+- `user_document_chunks`
+- `knowledge_documents`
+- `knowledge_chunks`
+- `reports`
+- `chat_sessions`
+- `chat_messages`
 
-- **Embedding model:** `text-embedding-ada-002` — converts text chunks to 1536-dimensional vectors
-- **Chat/generation model:** GPT-4 family — report generation, question answering, summarization
+The vector chunks live in `user_document_chunks` and `knowledge_chunks`, both
+with pgvector embeddings. Report history is stored in `reports`; `used_chunks`
+is stored as JSON text.
 
-### Report Output (PDF)
+## Report Pipeline
 
-Reports are produced as structured JSON by the LLM and rendered to PDF on demand using ReportLab. The structured payload follows the `ReportData` Pydantic model:
+1. Frontend posts `{ "report_scope": "Environmental" | "Social" | "Governance" | "ESG" }` to `/report/generate`.
+2. FastAPI queues `backend.generate_report` and registers task ownership.
+3. Celery retrieves chunks through `match_chunks2`.
+4. Partial scopes try tag aliases only; `ESG` retrieves without a tag filter.
+5. The report task separates company chunks from legal/knowledge-base chunks.
+6. OpenAI `gpt-4o-mini` returns structured JSON.
+7. The JSON and `used_chunks` are saved to report history when possible and
+   returned as the Celery task result.
+8. `/report/download/{task_id}` reads the cached task result and renders PDF via
+   ReportLab without re-running the LLM.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `kategoria` | str | ESG category (Environmental, Social, Governance, or general ESG) |
-| `streszczenie_wykonawcze` | str | Executive summary for management |
-| `zakres_i_metodyka` | str | Scope, data sources, method and limitations |
-| `wskazniki_liczbowe` | list[`WskaznikLiczbowy`] | Numeric indicators with name, value, and unit |
-| `szczegolowa_analiza` | list[str] | Longer analytical paragraphs grounded in company documents |
-| `wdrozone_polityki_i_dzialania` | list[str] | Implemented policies and actions |
-| `zidentyfikowane_ryzyka` | list[str] | Identified risks |
-| `luki_w_danych` | list[str] | Missing data and quality limitations |
-| `rekomendacje` | list[str] | Operational or management recommendations |
-| `zgodnosc_ze_standardami` | list[str] | Standard/regulation alignment based on the knowledge base |
-| `wnioski_i_zgodnosc_prawna` | str | Conclusions and legal compliance summary |
+## ReportData Contract
 
-The PDF endpoint reads the cached Celery task result and converts it to a downloadable PDF without re-running the LLM.
-The richer fields are optional for backward compatibility; older task results still render through the PDF generator.
+The PDF renderer accepts the current structured fields and keeps backward
+compatibility with older, shorter payloads:
 
-## Infrastructure
+| Field | Type |
+|-------|------|
+| `kategoria` | string |
+| `streszczenie_wykonawcze` | string |
+| `zakres_i_metodyka` | string |
+| `wskazniki_liczbowe` | list of `{ nazwa, wartosc, jednostka }` |
+| `szczegolowa_analiza` | list of strings |
+| `wdrozone_polityki_i_dzialania` | list of strings |
+| `zidentyfikowane_ryzyka` | list of strings |
+| `luki_w_danych` | list of strings |
+| `rekomendacje` | list of strings |
+| `zgodnosc_ze_standardami` | list of strings |
+| `wnioski_i_zgodnosc_prawna` | string |
 
-The platform is containerized using Docker Compose for local and staging environments.
+## Security Notes
 
-| Service | Image | Port |
-|---------|-------|------|
-| redis | redis:7-alpine | 6379 |
-| celery-worker | custom (Dockerfile.celery) | — |
-| celery-beat | custom (Dockerfile.celery) | — |
-| flower | optional | 5555 |
-
-The FastAPI application and frontend are run separately (e.g., `uvicorn` and `vite dev` for development).
-
-## Security Considerations
-
-- All API endpoints requiring user data are protected by JWT bearer token authentication.
-- Uploaded files are stored in a temporary directory (`tmp_uploads/`) and processed asynchronously.
-- Environment secrets (API keys, DB credentials, JWT secret) are managed via `.env` and must not be committed to version control.
-- Supabase row-level security should be enabled to isolate user data at the database layer.
+- Secrets live in `.env` and must not be committed.
+- `JWT_SECRET` must be at least 32 characters.
+- User-scoped API routes should use JWT-derived user identity where possible.
+- Current report history read endpoints still accept `user_id` as a parameter;
+  this is documented as current behavior and should be tightened in a future
+  sprint.

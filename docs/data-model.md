@@ -1,135 +1,154 @@
 # Data Model
 
-This document describes the main database tables and their relationships. The database is PostgreSQL hosted on Supabase with the `pgvector` extension for vector similarity search.
+This document reflects the active schema used by the current code. Older
+materials may refer to legacy table names; the active application uses the
+tables below.
 
-## Tables
+## Active Tables
 
-### users
+### `app_users`
 
-Stores registered user accounts.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | UUID | Primary key |
-| email | TEXT | Unique, used for login |
-| hashed_password | TEXT | bcrypt hash |
-| created_at | TIMESTAMPTZ | |
-
-### documents
-
-Metadata for files uploaded by users.
+Authentication and role records.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | UUID | Primary key |
-| user_id | UUID | Foreign key -> users.id |
-| filename | TEXT | Original file name |
-| file_type | TEXT | pdf, docx, xlsx, etc. |
-| status | TEXT | pending, processing, ready, failed |
-| tags | TEXT[] | User-supplied tags |
-| created_at | TIMESTAMPTZ | |
+| `id` | uuid | Primary key |
+| `username` | text | Login identifier |
+| `email` | text | Optional/contact email |
+| `password_hash` | text | bcrypt hash |
+| `role` | text | Usually `user` or `admin` |
+| `created_at` | timestamp | Creation time |
 
-### documents_embeddings
+### `user_documents`
 
-Stores text chunks and their vector embeddings for user-uploaded documents.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | UUID | Primary key |
-| document_id | UUID | Foreign key -> documents.id |
-| user_id | UUID | Denormalized for efficient RLS filtering |
-| chunk_text | TEXT | Raw segment content |
-| embedding | vector(1536) | OpenAI text-embedding-ada-002 output |
-| chunk_index | INTEGER | Position of chunk within the document |
-| metadata | JSONB | page number, category, tags, etc. |
-| created_at | TIMESTAMPTZ | |
-
-**Index:** `ivfflat` or `hnsw` on the `embedding` column for fast approximate nearest-neighbor search.
-
-### knowledge_embeddings
-
-Stores pre-processed chunks from ESG standards (GRI, SASB, TCFD). Shared across all users; managed by platform administrators.
+Metadata for user-uploaded documents.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | UUID | Primary key |
-| source | TEXT | Standard name (e.g., GRI, SASB, TCFD) |
-| section | TEXT | Section or topic identifier |
-| chunk_text | TEXT | Raw segment content |
-| embedding | vector(1536) | Vector representation |
-| chunk_index | INTEGER | Position within the source document |
-| metadata | JSONB | version, publication date, category |
-| created_at | TIMESTAMPTZ | |
+| `id` | uuid | Primary key |
+| `user_id` | uuid | Owner, references `app_users.id` |
+| `filename` | text | Original file name |
+| `file_type` | text | File extension/type |
+| `tag` | text | ESG tag used for retrieval filters |
+| `status` | text | Processing state |
+| `created_at` | timestamp | Upload time |
 
-**Index:** `ivfflat` or `hnsw` on the `embedding` column.
+### `user_document_chunks`
 
-### reports
-
-Generated ESG reports per user.
+Vectorized chunks from user documents.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | UUID | Primary key |
-| user_id | UUID | Foreign key -> users.id |
-| title | TEXT | |
-| content | TEXT | Full report text |
-| standard | TEXT | GRI, SASB, TCFD |
-| document_ids | UUID[] | Source documents used |
-| tags | TEXT[] | Tags applied during generation |
-| created_at | TIMESTAMPTZ | |
+| `id` | uuid | Primary key |
+| `document_id` | uuid | References `user_documents.id` |
+| `user_id` | uuid | Owner for filtering |
+| `chunk_text` | text | Parsed chunk content |
+| `embedding` | vector | OpenAI `text-embedding-3-small` output |
+| `chunk_index` | integer | Position in document |
+| `metadata` | json/jsonb | Source details when available |
+| `tag` | text | ESG filter tag when available |
+| `created_at` | timestamp | Creation time |
 
-### conversations
+### `knowledge_documents`
+
+Metadata for administrator-managed ESG knowledge-base documents.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `filename` | text | Source file name |
+| `document_type` | text | Knowledge document category |
+| `tag` | text | Optional ESG/general tag |
+| `version` | text | Version label |
+| `uploaded_by` | uuid | Admin user id |
+| `created_at` | timestamp | Upload time |
+
+### `knowledge_chunks`
+
+Vectorized chunks from the shared ESG knowledge base.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `document_id` | uuid | References `knowledge_documents.id` |
+| `chunk_text` | text | Chunk content |
+| `embedding` | vector | OpenAI `text-embedding-3-small` output |
+| `chunk_index` | integer | Position in document |
+| `metadata` | json/jsonb | Version/source metadata |
+| `tag` | text | Optional ESG/general tag |
+| `created_at` | timestamp | Creation time |
+
+### `reports`
+
+Stored report history.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `user_id` | uuid | Owner, references `app_users.id` |
+| `input_text` | text | Generation request summary |
+| `response_text` | text | Raw JSON string returned by the LLM |
+| `report_type` | text | `ESG`, `Environmental`, `Social` or `Governance` |
+| `used_chunks` | text | JSON-encoded list of RAG chunks |
+| `created_at` | timestamp | Creation time |
+
+### `chat_sessions`
 
 Chat session containers.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | UUID | Primary key |
-| user_id | UUID | Foreign key -> users.id |
-| created_at | TIMESTAMPTZ | |
+| `id` | uuid | Primary key |
+| `user_id` | uuid | Owner, references `app_users.id` |
+| `title` | text | Short title derived from the first query |
+| `created_at` | timestamp | Creation time |
 
-### chat_messages
+### `chat_messages`
 
-Individual messages within a conversation.
+Messages inside a chat session.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | UUID | Primary key |
-| conversation_id | UUID | Foreign key -> conversations.id |
-| role | TEXT | user or assistant |
-| content | TEXT | Message text |
-| sources | JSONB | Retrieved chunks used for this response |
-| created_at | TIMESTAMPTZ | |
+| `id` | uuid | Primary key |
+| `session_id` | uuid | References `chat_sessions.id` |
+| `role` | text | `user` or `assistant` |
+| `content` | text | Message content |
+| `created_at` | timestamp | Creation time |
 
-## Entity Relationships
+## Relationships
 
-```
-users
-  |--< documents
-  |       |--< documents_embeddings
+```text
+app_users
+  |--< user_documents
+  |       |--< user_document_chunks
   |
   |--< reports
   |
-  |--< conversations
+  |--< chat_sessions
           |--< chat_messages
 
-knowledge_embeddings  (no user foreign key — shared global table)
+knowledge_documents
+  |--< knowledge_chunks
 ```
 
-## Vector Search Pattern
+## Vector Search
 
-Both `documents_embeddings` and `knowledge_embeddings` support cosine similarity queries using pgvector:
+The application retrieves RAG context through Supabase RPC `match_chunks2`.
+`backend/RAG/rag_retriever.py` sends:
 
-```sql
-SELECT chunk_text, metadata, 1 - (embedding <=> $query_vector) AS similarity
-FROM documents_embeddings
-WHERE user_id = $user_id
-ORDER BY embedding <=> $query_vector
-LIMIT 10;
+- `query_embedding`
+- `match_threshold`
+- `match_count`
+- `filter_tag`
+- `query_user_id`
+
+The RPC returns chunk rows that are formatted by the Python retriever as:
+
+```text
+--- DOKUMENT: <source> ---
+<chunk_text>
 ```
 
-The `<=>` operator computes cosine distance; subtracting from 1 gives cosine similarity. The same pattern applies to `knowledge_embeddings` without the user filter.
-
-## Notes on Row-Level Security
-
-To prevent cross-user data leakage, Supabase RLS policies should restrict access on `documents`, `documents_embeddings`, `reports`, `conversations`, and `chat_messages` to rows where `user_id` matches the authenticated user's ID. The `knowledge_embeddings` table is read-only for all authenticated users.
+Report generation then separates company data from legal/knowledge-base context
+before prompting the model. Until RPC results expose structured source metadata,
+this split is header-based.

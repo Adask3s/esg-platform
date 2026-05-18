@@ -1,34 +1,22 @@
 # API Reference
 
-All endpoints are served by the FastAPI backend. Authentication is required for all user-scoped routes via a JWT bearer token in the `Authorization` header.
+FastAPI serves the backend API. User-scoped endpoints require a JWT bearer token
+in the `Authorization: Bearer <token>` header unless stated otherwise.
 
 ## Authentication
 
-### POST /auth/register
-Register a new user account.
+### POST `/auth/login`
 
-**Request body:**
-```json
-{
-  "email": "string",
-  "password": "string"
-}
-```
+Authenticates a user with `OAuth2PasswordRequestForm`.
 
-**Response:** `201 Created` with user ID.
+Request content type: `application/x-www-form-urlencoded`
 
-### POST /auth/login
-Authenticate and receive a JWT token.
+Fields:
+- `username`
+- `password`
 
-**Request body:**
-```json
-{
-  "email": "string",
-  "password": "string"
-}
-```
+Response:
 
-**Response:**
 ```json
 {
   "access_token": "string",
@@ -36,194 +24,274 @@ Authenticate and receive a JWT token.
 }
 ```
 
----
+### POST `/auth/signup`
 
-## Documents
+Creates a user account and returns a bearer token. Signup is disabled by default
+unless `SIGNUP_ENABLED=true`.
 
-### POST /documents/upload
-Upload one or more documents for processing.
+Request body:
 
-**Auth:** Required
-
-**Request:** `multipart/form-data`
-- `files` — one or more files (PDF, DOCX, XLSX)
-- `tags` — optional comma-separated tag list
-
-**Response:**
 ```json
 {
-  "document_ids": ["uuid", "..."],
-  "task_ids": ["celery-task-id", "..."]
+  "username": "string",
+  "email": "optional@example.com",
+  "password": "string"
 }
 ```
 
-Processing (parsing, chunking, embedding) is performed asynchronously. Use the task status endpoint to poll progress.
+### POST `/auth/contact`
 
-### GET /documents
-List all documents belonging to the authenticated user.
+Accepts a simple contact form payload:
 
-**Auth:** Required
+```json
+{
+  "email": "string",
+  "problem": "string"
+}
+```
 
-**Response:** Array of document metadata objects including `id`, `filename`, `status`, `created_at`.
+## Task Status
 
-### DELETE /documents/{document_id}
-Delete a document and all its associated chunks and embeddings.
+### GET `/status/{task_id}`
 
-**Auth:** Required
+Returns normalized Celery task status. If the task owner was registered in Redis,
+the endpoint verifies that the authenticated user owns the task.
 
----
+Response shape:
 
-## Tasks
-
-### GET /tasks/{task_id}
-Check the status of an asynchronous Celery task.
-
-**Auth:** Required
-
-**Response:**
 ```json
 {
   "task_id": "string",
-  "status": "PENDING | STARTED | SUCCESS | FAILURE",
-  "result": null
+  "state": "PENDING | STARTED | PROGRESS | RETRY | SUCCESS | FAILURE",
+  "progress": 0,
+  "stage": "string | null",
+  "stage_pl": "string | null",
+  "filename": "string | null",
+  "attempts": 1,
+  "result": {},
+  "error": null,
+  "updated_at": "ISO-8601"
 }
 ```
 
----
+## User Documents
 
-## Chat / Q&A
+### POST `/user/documents/upload`
 
-### POST /ask/chat
-Submit a question against the user's documents and the ESG knowledge base.
+Uploads one user document and starts the parse/chunk/embed Celery pipeline.
 
-**Auth:** Required
+Request content type: `multipart/form-data`
 
-**Request body:**
+Fields:
+- `file`: PDF, DOCX, XLSX/CSV, TXT or supported text-like file
+- `tag`: optional ESG tag, for example `Environmental`, `Social`, `Governance`
+
+Response:
+
 ```json
 {
-  "question": "string",
-  "tags": ["optional", "tag", "filters"],
-  "conversation_id": "uuid (optional, for history)"
+  "task_id": "celery-task-id",
+  "status": "queued",
+  "message": "Dokument jest przetwarzany w tle. Sprawdz /status/{task_id} po wynik."
 }
 ```
 
-**Response:**
+### POST `/user/documents/delete`
+
+Deletes a user document and related chunks.
+
+Request body:
+
 ```json
 {
-  "answer": "string",
-  "sources": [
-    {
-      "chunk_text": "string",
-      "source": "user_document | knowledge_base",
-      "document_id": "uuid",
-      "similarity": 0.91
-    }
-  ],
-  "conversation_id": "uuid"
+  "document_id": "uuid"
 }
 ```
 
-### GET /ask/chat/{conversation_id}/history
-Retrieve paginated chat history for a conversation.
+### GET `/documents/mine`
 
-**Auth:** Required
+Lists documents for the authenticated user from Supabase.
 
-**Query params:** `page` (default 1), `page_size` (default 20)
+### GET `/documents/knowledge`
 
----
+Lists knowledge-base documents. Admin only.
 
-## Report Generation
+### GET `/documents/`
 
-### POST /report/generate
-Trigger asynchronous ESG report generation.
+Lists documents through the document getter router.
 
-**Auth:** Required
+## Knowledge Base
 
-**Request body:**
+### POST `/knowledge/upload`
+
+Admin-only multi-file upload to the ESG knowledge base. Each accepted file starts
+a background parsing task.
+
+Request content type: `multipart/form-data`
+
+Fields:
+- `files`: one or more files
+- `tag`: optional, defaults to `general`
+- `document_type`: optional, defaults to `general`
+- `version`: optional, defaults to `1.0`
+
+### POST `/knowledge/parse-and-store`
+
+Admin-only endpoint for parsing a file and storing it in
+`knowledge_documents`/`knowledge_chunks`.
+
+## Embeddings
+
+### POST `/embeddings/generate-for-document`
+
+Starts embedding generation for a selected document/chunk table target.
+
+### POST `/embeddings/generate-for-tag`
+
+Starts embedding generation for chunks matching a tag.
+
+### POST `/embeddings/generate-all`
+
+Starts bulk embedding generation.
+
+### GET `/embeddings/status`
+
+Returns basic embedding subsystem status.
+
+## Reports
+
+### POST `/report/generate`
+
+Starts asynchronous ESG report generation.
+
+Request body:
+
 ```json
 {
   "report_scope": "Environmental | Social | Governance | ESG"
 }
 ```
 
-**Response:**
+Response:
+
 ```json
 {
-  "task_id": "string",
+  "task_id": "celery-task-id",
   "status": "queued",
-  "message": "Raport jest generowany w tle. Sprawdź /status/{task_id} po wynik."
+  "message": "Raport jest generowany w tle. Sprawdz /status/{task_id} po wynik."
 }
 ```
 
-Partial scopes (`Environmental`, `Social`, `Governance`) filter retrieval by matching tag aliases only. `ESG` runs without a tag filter and can use all user documents. The cached task result contains a structured report payload with the legacy fields plus optional richer fields: `streszczenie_wykonawcze`, `zakres_i_metodyka`, `szczegolowa_analiza`, `luki_w_danych`, `rekomendacje`, and `zgodnosc_ze_standardami`.
+Partial scopes (`Environmental`, `Social`, `Governance`) try tag aliases only.
+`ESG` runs without a tag filter. The task result contains:
+- `status`: `success` or `partial_success`
+- `kategoria`
+- `applied_filter`
+- `used_chunks`
+- `data`: structured report JSON or `null`
 
-### GET /report/download/{task_id}
-Download a generated report as a PDF, streamed directly from the cached Celery task result.
+The report JSON keeps legacy fields and may include richer fields:
+`streszczenie_wykonawcze`, `zakres_i_metodyka`, `szczegolowa_analiza`,
+`luki_w_danych`, `rekomendacje`, `zgodnosc_ze_standardami`.
 
-**Auth:** Required
+### GET `/report/download/{task_id}`
 
-**Path params:**
-- `task_id` — the ID returned from `/report/generate`
+Downloads a generated report as PDF from the cached Celery task result. This does
+not call the LLM again.
 
-**Behavior:**
-- Verifies that the authenticated user owns the task.
-- Verifies that the task state is `SUCCESS`. Returns `400` if it is still pending or has failed.
-- Reads the structured `ReportData` payload from the task result, renders it to PDF via ReportLab, and streams the binary response.
-- The LLM is **not** re-run; this endpoint is purely a render-and-download operation.
+Behavior:
+- Requires the task to be in `SUCCESS`.
+- Verifies task ownership when owner metadata exists in Redis.
+- Maps task `data` to `ReportData`.
+- For `partial_success`, renders an empty-state PDF with the message.
+- Returns `application/pdf` with `Content-Disposition`.
 
-**Response:** `application/pdf` with header `Content-Disposition: attachment; filename="raport_<kategoria>.pdf"`.
+### GET `/reports/user`
 
-**Error responses:**
-| Status | Cause |
-|--------|-------|
-| 400 | Task is not in `SUCCESS` state |
-| 401 | Missing or invalid token |
-| 403 | The task does not belong to the authenticated user |
-| 404 | Task succeeded but contains no report payload |
-| 500 | PDF rendering error |
+Lists report history for a user. Current code accepts `user_id` as a query
+parameter.
 
-### GET /report/{report_id}
-Retrieve a generated report by ID.
+### GET `/reports/{report_id}`
 
-**Auth:** Required
+Returns one stored report for `report_id` and query `user_id`, including parsed
+JSON content and parsed `used_chunks`.
 
-**Response:** Report object with `id`, `title`, `content`, `standard`, `created_at`.
+### DELETE `/reports/{report_id}`
 
-### GET /report
-List all reports for the authenticated user.
+Deletes a stored report owned by the authenticated user.
 
-**Auth:** Required
+## Chat
 
----
+### POST `/chat/ask`
 
-## Knowledge Base
+Starts a background RAG chat task and stores the user message.
 
-### POST /knowledge/upload
-Upload a document to the shared ESG knowledge base (admin only).
+Request body:
 
-**Auth:** Required (admin role)
+```json
+{
+  "query": "string",
+  "tag": "optional tag",
+  "session_id": "optional session id"
+}
+```
 
-**Request:** `multipart/form-data` — single file
+Response:
 
-### GET /knowledge
-List knowledge base entries.
+```json
+{
+  "status": "queued",
+  "task_id": "celery-task-id",
+  "session_id": "uuid",
+  "message": "Pytanie przetwarzane w tle. Sprawdz status zadania."
+}
+```
 
-**Auth:** Required
+### GET `/chat/sessions`
 
----
+Lists chat sessions for the authenticated user. Supports `limit` and `offset`.
 
-## Embeddings
+### GET `/chat/sessions/{session_id}/history`
 
-### POST /embeddings/reindex/{document_id}
-Re-trigger the embedding pipeline for an existing document (e.g., after a knowledge base update).
+Lists messages for a session. Supports `limit` and `offset`.
 
-**Auth:** Required
+### DELETE `/chat/sessions/{session_id}`
 
----
+Deletes an owned chat session and its message history.
+
+## Utility and Ingestion Endpoints
+
+### GET `/ping`
+
+Health check.
+
+### GET `/openai-status`
+
+Checks whether the backend can initialize OpenAI configuration.
+
+### POST `/parse`
+
+Parses an uploaded file synchronously for parser diagnostics.
+
+### POST `/process`
+
+Legacy async parse-and-store entrypoint.
+
+### POST `/upload`
+
+Legacy upload endpoint.
+
+### POST `/ingest/chunk/url`
+
+Fetches a URL, filters/chunks text and returns chunking output.
+
+### POST `/ingest/chunk/file`
+
+Chunks an uploaded file and returns chunking output.
 
 ## Error Responses
 
-All error responses follow the standard FastAPI format:
+FastAPI validation and error responses use the standard shape:
 
 ```json
 {
@@ -231,11 +299,4 @@ All error responses follow the standard FastAPI format:
 }
 ```
 
-| HTTP Status | Meaning |
-|-------------|---------|
-| 400 | Bad request — malformed input |
-| 401 | Unauthorized — missing or invalid token |
-| 403 | Forbidden — insufficient permissions |
-| 404 | Resource not found |
-| 422 | Validation error — request body schema mismatch |
-| 500 | Internal server error |
+Common statuses: `400`, `401`, `403`, `404`, `409`, `413`, `422`, `500`.
