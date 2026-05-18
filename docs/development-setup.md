@@ -1,183 +1,144 @@
 # Development Setup
 
+The local reference environment is Windows + PowerShell. The backend can also be
+run from other shells if paths are adjusted.
+
 ## Prerequisites
 
-| Tool | Minimum version | Purpose |
-|------|----------------|---------|
-| Python | 3.11 | Backend runtime |
-| Node.js | 18 | Frontend build |
-| Docker + Docker Compose | 24 | Redis, Celery |
-| Git | any | Version control |
+| Tool | Purpose |
+|------|---------|
+| Python 3.11+ | FastAPI, Celery tasks and tests |
+| Node.js 18+ | Vite/React frontend |
+| Docker + Docker Compose | Redis, Celery worker/beat, Flower |
+| Git | Version control |
 
-The Python backend depends, among others, on `fastapi`, `uvicorn`, `celery`, `redis`, `openai`, `supabase`, `pdfplumber`, `python-docx`, `openpyxl`, `tiktoken`, `python-jose[cryptography]`, `passlib[bcrypt]`, `flower`, and **`reportlab`** (server-side PDF rendering for downloadable ESG reports). The full list is in `backend/requirements.txt`.
+The backend dependencies are listed in `backend/requirements.txt`. Important
+packages include `fastapi`, `uvicorn`, `celery`, `redis`, `openai`, `supabase`,
+`python-docx`, `pdfplumber`, `openpyxl`, `reportlab`, `pytest` and
+`python-jose[cryptography]`.
 
-You also need:
-- An OpenAI API key with access to `text-embedding-ada-002` and a GPT-4 model
-- A Supabase project with the `pgvector` extension enabled
+## Environment Variables
 
-## Repository Setup
+Do not commit `.env`.
 
-```bash
-git clone <repository-url>
-cd JKPSZ3-platforma-etg
-```
+Required or commonly used variables:
 
-## Environment Configuration
-
-Copy the example env file and fill in your credentials:
-
-```bash
-cp .env.example .env
-```
-
-Required variables:
-
-```
+```powershell
 OPENAI_API_KEY=sk-...
 SUPABASE_URL=https://<project>.supabase.co
-SUPABASE_KEY=<service-role-key>
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 DATABASE_URL=postgresql://...
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=<random-secret-min-32-chars>
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=60
+SIGNUP_ENABLED=false
 TZ=Europe/Warsaw
 ```
 
-## Database Initialization
+Optional frontend variables:
 
-Run the schema initialization script once against your Supabase PostgreSQL instance:
-
-```bash
-python check_schema.py
+```powershell
+VITE_API_URL=http://localhost:8000
+VITE_REPORT_MODEL_LABEL=AI POWERED
 ```
 
-Ensure the `pgvector` extension is enabled in Supabase:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
+The current embedding model is `text-embedding-3-small`. Report and chat
+generation use `gpt-4o-mini`.
 
 ## Backend
 
-```bash
-cd backend
-python -m venv ../.venv        # skip if .venv already exists
-source ../.venv/bin/activate   # Windows: ..\.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+From the repository root:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH="."
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
+The API runs at `http://localhost:8000`; OpenAPI docs are available at
+`http://localhost:8000/docs`.
 
-## Asynchronous Workers (Celery + Redis)
+## Redis, Celery and Flower
 
-Start the infrastructure containers:
-
-```bash
-docker-compose up -d redis
+```powershell
+docker compose up -d redis celery-worker celery-beat
+docker compose --profile monitoring up -d flower
 ```
 
-Start the Celery worker from the project root (with the virtual environment activated):
+Useful logs:
 
-```bash
-celery -A backend.celery.celery_app worker \
-  --loglevel=info \
-  -Q default,parsing,embeddings,embeddings_bulk,llm \
-  --concurrency=4
-```
-
-Optionally start the beat scheduler for periodic tasks:
-
-```bash
-celery -A backend.celery.celery_app beat --loglevel=info
-```
-
-Optionally start Flower for task monitoring:
-
-```bash
-celery -A backend.celery.celery_app flower --port=5555
-```
-
-Alternatively, bring up all services at once via Docker Compose:
-
-```bash
-docker-compose up --build
+```powershell
+docker compose logs -f celery-worker
 ```
 
 ## Frontend
 
-```bash
+```powershell
 cd frontend
-npm install
-npm run dev
+npm.cmd install
+npm.cmd run dev
+npm.cmd run build
+npm.cmd run lint
 ```
 
-The development server runs at `http://localhost:5173` with HMR enabled. API requests are proxied to `http://localhost:8000` as configured in `vite.config.js`.
+The Vite dev server runs at `http://localhost:5173`. There is no Vite proxy in
+`frontend/vite.config.js`; frontend API calls use `VITE_API_URL` and fall back to
+`http://localhost:8000`.
 
-## Running Tests
+Use `npm.cmd`, not `npm`, on Windows PowerShell if `npm.ps1` is blocked by
+ExecutionPolicy.
 
-From the `backend/` directory (with the virtual environment activated):
+## Fast Backend Tests
 
-```bash
-pytest                          # all tests
-pytest test_common_endpoints.py # endpoint tests only
-pytest test_e2e.py              # end-to-end tests
+From the repository root:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH="."
+python -m pytest backend\test_common_endpoints.py backend\test_negative_integration.py
+python -m pytest backend\test_pdf_generator.py backend\test_report_tasks.py
+python -m pytest backend\test_rag_quality_sample_docs.py
 ```
 
-## Diagnostic Scripts
+The RAG quality sample test is offline and deterministic. It parses
+`sample_uploads/*.docx`, uses the real chunker and monkeypatches embedding/RPC
+calls so it does not require OpenAI, Supabase or Celery.
 
-### diagnose_rag.py
+## E2E Report Test
 
-A standalone script at the project root that exercises the RAG retrieval path directly, bypassing FastAPI and Celery. It is the fastest way to inspect what context the LLM would actually receive for a given query — useful when answers look wrong and you need to tell whether the issue is in retrieval or in the prompt/model.
+Run only when API, Redis/Celery, OpenAI, Supabase and an `admin/admin` account
+are available:
 
-**Usage:**
-
-```bash
-python diagnose_rag.py "Your question" "<user_id>" ["optional_tag"]
+```powershell
+python backend\test_e2e.py Environmental
 ```
 
-**Arguments:**
+## RAG Diagnostics
 
-| Position | Name | Description |
-|----------|------|-------------|
-| 1 | `query` | Free-form question, e.g. `"What are our Scope 1 emissions?"` |
-| 2 | `user_id` | UUID of the user whose documents should be searched |
-| 3 | `tag` | Optional metadata tag filter (e.g. `Environmental`) |
+```powershell
+python diagnose_rag.py "pytanie" "<user_id>" "Environmental"
+```
 
-**What it shows:**
-
-- Total number of matching chunks returned
-- Header line of each retrieved chunk
-- First ~100 characters of each chunk's body
-- A summary that splits the matches into two buckets:
-  - **User documents** — chunks from `documents_embeddings`
-  - **Knowledge base (EU regulations)** — chunks recognized by markers like `celex` or `rozporządzenie` in the header
-
-If no chunks come back, the script prints likely causes (wrong `user_id`, non-existent tag, or a similarity threshold that is too strict).
-
-**Defaults:** `match_count=20`, `match_threshold=0.20`. These can be tuned by editing the call to `run_diagnostics` in the script.
-
-## Useful Commands
-
-| Command | Purpose |
-|---------|---------|
-| `uvicorn main:app --reload` | Start backend with hot reload |
-| `npm run build` | Build frontend for production |
-| `npm run lint` | Run ESLint |
-| `docker-compose logs -f celery-worker` | Stream Celery worker logs |
-| `docker-compose down -v` | Stop all containers and remove volumes |
+The script calls the same retrieval path as the app and prints matched chunks,
+source headers and a user-doc vs knowledge-base split.
 
 ## Common Issues
 
-**Celery tasks stay in PENDING state**
-Verify Redis is running and `REDIS_URL` in `.env` matches the broker URL used in `celery_app.py`.
+### Celery task stays `PENDING`
 
-**Embedding calls fail**
-Check that `OPENAI_API_KEY` is valid and the account has access to `text-embedding-ada-002`.
+Check that Redis is running and `REDIS_URL` matches backend and worker config.
 
-**pgvector errors on insert**
-Confirm the `vector` extension is enabled in Supabase and that the `embedding` column type is `vector(1536)`.
+### OpenAI embedding calls fail
 
-**JWT token rejected**
-Ensure `JWT_SECRET` is at least 32 characters and identical across the backend instances if running multiple workers.
+Check `OPENAI_API_KEY` and access to `text-embedding-3-small`.
+
+### PDF has broken Polish characters
+
+Install or configure TTF fonts. The PDF generator tries Arial, DejaVu Sans,
+Liberation Sans and ReportLab Vera before falling back to Helvetica.
+
+### Frontend cannot reach backend
+
+Set `VITE_API_URL=http://localhost:8000` or rely on the same fallback. The Vite
+config does not proxy API calls.

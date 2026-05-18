@@ -60,6 +60,24 @@ def _report_filter_candidates(target_tag: str) -> list[Optional[str]]:
     return unique_candidates
 
 
+def _split_report_chunks_by_source(found_chunks: list[str]) -> tuple[list[str], list[str]]:
+    """Split RAG chunks into company data and legal/knowledge-base context.
+
+    The current RPC returns formatted strings, so source routing is based on the
+    header line. Keep this helper small and testable until the RPC returns
+    structured source metadata.
+    """
+    user_chunks: list[str] = []
+    kb_chunks: list[str] = []
+    for chunk in found_chunks:
+        first_line = chunk.split("\n", 1)[0]
+        if "CELEX" in first_line or "Rozporządzenie" in first_line or "Dyrektywa" in first_line:
+            kb_chunks.append(chunk)
+        else:
+            user_chunks.append(chunk)
+    return user_chunks, kb_chunks
+
+
 def _build_report_prompt(target_tag: str, user_context: str, kb_context: str, hint: str) -> str:
     return f"""Jesteś starszym konsultantem ESG dla branży budowlanej. Przygotowujesz maksymalnie szczegółowy, profesjonalny raport dla zakresu: {target_tag}.
 
@@ -199,14 +217,7 @@ def generate_report_task(
         state="PROGRESS",
         meta={"step": "building_prompt", "stage_pl": "Budowanie promptu", "progress": 50, "tag": target_tag},
     )
-    user_chunks = []
-    kb_chunks = []
-    for chunk in found_chunks:
-        first_line = chunk.split('\n', 1)[0]
-        if "CELEX" in first_line or "Rozporządzenie" in first_line or "Dyrektywa" in first_line:
-            kb_chunks.append(chunk)
-        else:
-            user_chunks.append(chunk)
+    user_chunks, kb_chunks = _split_report_chunks_by_source(found_chunks)
 
     # ================= KOD DEBUGUJĄCY PODZIAŁ RAG =================
     import logging
