@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import importlib
 
@@ -351,6 +352,35 @@ def test_report_generate_queued(client, monkeypatch):
     response = client.post("/report/generate", json={"report_scope": "Environmental"})
     assert response.status_code == 200
     assert response.json()["task_id"] == "report-1"
+
+
+def test_reports_user_list_returns_history(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    created_at = datetime(2026, 5, 18, 12, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(main.report_repo, "get_reports_by_user", lambda user_id: [(7, "Environmental", created_at)])
+
+    response = client.get("/reports/user")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": 7,
+            "report_type": "Environmental",
+            "created_at": created_at.isoformat(),
+        }
+    ]
+
+
+def test_report_delete_only_removes_owned_report(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    captured = {}
+    monkeypatch.setattr(main.report_repo, "delete_report", lambda report_id, user_id: captured.update({"report_id": report_id, "user_id": user_id}) or True)
+
+    response = client.delete("/reports/7")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "deleted", "report_id": "7"}
+    assert captured == {"report_id": "7", "user_id": "u1"}
 
 
 def test_report_download_pdf_success(client, monkeypatch):

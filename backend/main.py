@@ -982,10 +982,13 @@ async def ask_chat(request: ChatRequest, user = Depends(get_current_user)):
 # =========== ENDPOINT GET DLA WSZYSTKICH RAPORTÓW USERA ===============
 from database.report_repo import get_reports_by_user, get_report_by_id
 @app.get("/reports/user", tags=["Reports"])
-async def get_user_reports_endpoint(user_id: str):
-    """Pobiera skróconą listę wszystkich raportów użytkownika."""
+async def get_user_reports_endpoint(user = Depends(get_current_user)):
+    """Pobiera skróconą listę wszystkich raportów zalogowanego użytkownika."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
-        rows = get_reports_by_user(user_id)
+        rows = get_reports_by_user(str(user['id']))
         # rows to lista krotek (id, report_type, created_at) zdefiniowana w report_repo.py
         reports = [
             {"id": r[0], "report_type": r[1], "created_at": r[2]}
@@ -997,8 +1000,12 @@ async def get_user_reports_endpoint(user_id: str):
 
 # =========== ENDPOINT GET DLA RAPORTU PO RAPORT_ID (Z NOWĄ KOLUMNĄ USED_CHUNKS) - JSON DLA FRONT'U ===============
 @app.get("/reports/{report_id}", tags=["Reports"])
-async def get_single_report_endpoint(report_id: str, user_id: str):
-    """Pobiera pełen wygenerowany JSON oraz powiązane chunki źródłowe."""
+async def get_single_report_endpoint(report_id: str, user = Depends(get_current_user)):
+    """Pobiera pełen wygenerowany JSON oraz powiązane chunki źródłowe dla zalogowanego użytkownika."""
+    if not user or 'id' not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    user_id = str(user['id'])
+
     try:
         report = get_report_by_id(report_id, user_id)
         if not report:
