@@ -505,6 +505,10 @@ html {
   text-align: center;
 }
 
+.report-history-section {
+  margin-top: 28px;
+}
+
 .history-header {
   display: flex;
   align-items: center;
@@ -571,6 +575,10 @@ html {
   background: rgba(255, 255, 255, 0.4);
 }
 
+.report-history-table .history-row {
+  grid-template-columns: 1.2fr 1fr 0.8fr;
+}
+
 .history-row {
   display: grid;
   grid-template-columns: 1.6fr 0.8fr 1fr 1fr 0.8fr 1fr;
@@ -635,6 +643,11 @@ html {
   flex-wrap: wrap;
 }
 
+/* Center actions for the Document Processing History (not report history) */
+.history-section:not(.report-history-section) .history-row-actions {
+  justify-content: center;
+}
+
 .table-btn {
   padding: 7px 12px;
   border-radius: 8px;
@@ -644,6 +657,15 @@ html {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.table-btn.danger {
+  background: #f24e4e;
+  color: #fff;
+}
+
+.table-btn.danger:hover {
+  filter: brightness(0.95);
 }
 
 .table-btn.ghost {
@@ -664,6 +686,10 @@ html {
   .history-row {
     grid-template-columns: 1.2fr 0.7fr 1fr 1fr 0.7fr 0.8fr;
   }
+
+  .report-history-table .history-row {
+    grid-template-columns: 1fr 1fr 0.8fr;
+  }
 }
 
 @media (max-width: 680px) {
@@ -674,6 +700,10 @@ html {
   .history-row {
     grid-template-columns: 1fr 0.7fr 0.9fr 0.9fr 0.7fr 0.7fr;
     font-size: 11px;
+  }
+
+  .report-history-table .history-row {
+    grid-template-columns: 1fr 0.9fr 0.8fr;
   }
 }
 
