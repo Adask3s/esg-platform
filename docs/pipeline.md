@@ -1,138 +1,124 @@
 # Data Processing Pipeline
 
-This document describes the end-to-end pipeline from document upload to ESG report generation.
+This document describes the current path from user upload to ESG report PDF.
 
-## Pipeline Overview
+## Overview
 
-```
-[1] Upload          -> User submits documents via the frontend
-[2] Text Extraction -> Celery parses raw text from files
-[3] Chunking        -> Text is split into semantic segments (<= 2000 chars)
-[4] Embedding       -> Each chunk is vectorized and stored in Supabase
-[5] Knowledge Base  -> Pre-embedded ESG regulation fragments (static)
-[6] RAG Retrieval   -> Relevant chunks are selected for the user query
-[7] Prompt Building -> Layered prompt is assembled for the LLM
-[8] Generation      -> LLM produces the ESG report or answer
-[9] Editing         -> User iterates; each edit re-enters the pipeline from step 6
+```text
+Upload -> parse -> chunk -> embed -> Supabase pgvector
+                                |
+Report/chat request -> retrieve -> prompt -> OpenAI -> JSON/task result
+                                                   |
+                                                   v
+                                           ReportLab PDF export
 ```
 
----
+## Upload and Parsing
 
-## Stage 1 — Document Upload
+User document upload is handled by `POST /user/documents/upload`. The frontend
+component `MultiFileUpload.jsx` sends one file per request with an optional ESG
+tag and then polls `/status/{task_id}`.
 
-The user uploads one or more documents through the frontend (supported formats: PDF, XLSX, DOCX, and plain text). The user may also attach tags (Environmental, Social, Governance) that will later be used to filter relevant chunks during retrieval.
+The Celery task parses files through `ParserDispatcher`:
 
-Uploads are handled by the `MultiFileUpload` component, which supports:
+| Format | Parser |
+|--------|--------|
+| PDF | `backend/parsers/pdf_parser.py` |
+| DOCX | `backend/parsers/docx_parser.py` |
+| XLSX/CSV | `backend/parsers/tabular_parser.py` |
 
-- Up to 10 files per batch
-- Maximum 50 MB per file
-- Up to 3 concurrent uploads (the rest are queued)
-- Per-file ESG tag selection
-- Per-file phase tracking: `queued` → `uploading` → `processing` → `done` / `error`
-- Polling of task status every 1.5 s until each file completes
+DOCX paragraph text becomes `parse_result.text`. Tables are stored separately in
+`parse_result.tables`; the current RAG path relies mainly on paragraph text, so
+important test data should also appear in paragraphs.
 
-Each file POST returns a Celery `task_id`. The frontend then polls the task-status endpoint independently for each file. Celery enqueues parsing tasks asynchronously so the user is never blocked.
+## Chunking and Embeddings
 
-## Stage 2 — Text Extraction
+Text is split by `backend/ingestion/chunker.py` with sentence/paragraph-aware
+logic and token estimates. User chunks are stored in `user_document_chunks`.
+Knowledge-base chunks are stored in `knowledge_chunks`.
 
-A Celery worker picks up the parsing task from the `parsing` queue. The appropriate parser is dispatched based on file type:
+The embedding service uses OpenAI `text-embedding-3-small`.
 
-| Format | Parser module |
-|--------|--------------|
-| PDF | `pdf_parser.py` |
-| DOCX | `docx_parser.py` |
-| XLSX / CSV | `tabular_parser.py` (outputs JSON for structured data) |
-| HTML | `html_fetcher.py` |
+## Knowledge Base
 
-The result is raw text (or structured JSON for tabular data) stored temporarily before the next stage.
+Administrators upload knowledge documents through `/knowledge/upload` or
+`/knowledge/parse-and-store`. Metadata lives in `knowledge_documents`; vector
+chunks live in `knowledge_chunks`.
 
-## Stage 3 — Chunking
+The knowledge base is shared context for regulations and standards. Report
+generation must not use numeric indicators from legal documents as company KPIs.
 
-Because document texts are too large to fit in a single LLM context window, the text is split into semantically meaningful segments. Each chunk must not exceed 2000 characters. The chunker (`ingestion/chunker.py`) respects sentence and paragraph boundaries to avoid splitting mid-sentence.
+## Retrieval
 
-A chunk carries:
-- `text` — the raw segment content
-- `metadata` — document ID, page number, source file, tags, ESG category if detected
+`backend/RAG/rag_retriever.py` calls Supabase RPC `match_chunks2` with:
 
-## Stage 4 — Embedding (User Documents)
+- query embedding
+- match threshold/count
+- optional `filter_tag`
+- `query_user_id`
 
-Each chunk is sent to the `embeddings` Celery queue. The embedding service (`embeddings/embedding_service.py`) calls the OpenAI embeddings API and stores the result in the `documents_embeddings` table in Supabase.
+Returned rows are sorted by similarity and formatted as:
 
-Each row in `documents_embeddings` contains:
-- `chunk_text` — the segment text
-- `embedding` — a 1536-dimensional vector (pgvector)
-- `metadata` — document ID, user ID, tags, category
-
-## Stage 5 — ESG Knowledge Base
-
-The knowledge base is a second vector table (`knowledge_embeddings`) containing pre-chunked and pre-embedded fragments from ESG standards: GRI, SASB, TCFD, and relevant construction-sector regulations.
-
-This table is shared across all users and updated only when regulations change. The ingestion process is identical to stages 2-4 but is run by platform administrators, not end users.
-
-## Stage 6 — RAG Retrieval
-
-When a user requests a report or asks a question:
-
-1. The query text is embedded using the same OpenAI model.
-2. A cosine similarity search is performed against both `documents_embeddings` (user's documents) and `knowledge_embeddings` (ESG standards).
-3. The top-N most semantically similar chunks from each table are selected.
-4. If the user specified tags, the search is pre-filtered by those tag metadata fields.
-
-Supabase's pgvector extension handles the vector similarity search efficiently.
-
-## Stage 7 — Prompt Building
-
-The final prompt sent to the LLM is assembled in layers (`RAG/prompt_builder.py`):
-
-```
-[System message]
-You are an expert ESG analyst for the construction sector.
-
-[Knowledge context]
-<selected fragments from ESG standards>
-
-[Data context]
-<selected fragments from user documents>
-
-[Task instruction]
-Generate an ESG report section covering: <user's request or selected tags>
+```text
+--- DOKUMENT: <source> ---
+<chunk_text>
 ```
 
-This layered structure ensures the model has regulatory grounding (knowledge context) before it interprets company-specific data (data context).
+Partial reports use tag aliases:
+- `Environmental`, `environmental`, `E`, `e`
+- `Social`, `social`, `S`, `s`
+- `Governance`, `governance`, `G`, `g`
 
-## Stage 8 — Report Generation
+The full `ESG` report runs without a tag filter.
 
-The assembled prompt is submitted to the LLM via the `llm` Celery queue. The model:
-- Interprets the company data in the context of ESG regulations
-- Generates a structured JSON payload (numeric indicators, implemented policies, identified risks, conclusions)
-- Returns the output to the backend, which caches it on the Celery task result
+## Report Generation
 
-If the user selected tags, the retrieved chunks are further filtered by metadata category before prompt assembly, producing a tag-specific report section (Environmental, Social, or Governance).
+`POST /report/generate` queues `backend.generate_report`.
 
-### Background retrieval and PDF streaming
+The Celery task:
+1. Retrieves RAG context.
+2. Splits chunks into company data and legal/knowledge-base context.
+3. Builds a strict JSON prompt.
+4. Calls OpenAI `gpt-4o-mini`.
+5. Parses the response as JSON.
+6. Saves report history when possible.
+7. Returns the JSON and `used_chunks` as the Celery task result.
 
-Report generation is a non-blocking background task. The frontend triggers `/report/generate`, receives a `task_id`, and polls the task status endpoint. Once the task reaches `SUCCESS` the user can hit `/report/download/{task_id}` to receive a PDF directly.
+The structured payload includes legacy fields plus optional richer fields:
 
-The PDF is rendered by `backend/utils/pdf_generator.py` using ReportLab. The renderer takes the structured `ReportData` payload (built earlier by the LLM stage) and produces a styled PDF containing:
+- `streszczenie_wykonawcze`
+- `zakres_i_metodyka`
+- `szczegolowa_analiza`
+- `luki_w_danych`
+- `rekomendacje`
+- `zgodnosc_ze_standardami`
 
-- Title page with the ESG category
-- Executive summary and scope/methodology
-- A numeric indicators table (name / value / unit)
-- Detailed analysis of the selected scope
-- A bulleted list of implemented policies and actions
-- A bulleted list of identified risks
-- Data gaps, recommendations and standards/regulatory alignment
-- A conclusions and legal-compliance section
-- RAG source citations from `used_chunks`
+If retrieval finds no chunks for a selected partial scope, the task returns
+`partial_success` with `data: null`. The frontend still allows PDF export, and
+the PDF renderer produces an empty-state report.
 
-Because the LLM output is cached on the Celery result backend, downloading the PDF does **not** trigger another LLM call.
+## PDF Export
 
-## Stage 9 — Interactive Editing
+`GET /report/download/{task_id}` reads the cached Celery task result and renders
+PDF through `backend/utils/pdf_generator.py`. It does not call OpenAI again.
 
-After initial generation the user can:
-- Edit sections manually
-- Upload additional documents
-- Ask follow-up questions about specific regulations
-- Request expansion or summarization of any section
+The PDF includes:
+- cover page
+- running header on pages after the cover
+- footer and page numbers
+- executive summary, methodology and detailed analysis
+- numeric KPI table
+- actions, risks, data gaps, recommendations and standards alignment
+- legal/compliance summary
+- RAG citations from `used_chunks`
+- PDF outline/bookmarks
 
-Each interaction re-enters the pipeline at stage 6: the new query is embedded, fresh chunks are retrieved, and a new prompt is built incorporating the conversation history where relevant.
+The cover can include a logo through `ESG_PDF_LOGO_PATH`. TTF fonts are preferred
+for Polish glyph support.
+
+## Chat
+
+`POST /chat/ask` stores the user message, queues a Celery RAG task and returns a
+`task_id` plus `session_id`. The frontend or API client polls `/status/{task_id}`
+for the answer task result. Session history is available through
+`/chat/sessions` and `/chat/sessions/{session_id}/history`.

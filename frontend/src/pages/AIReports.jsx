@@ -3,6 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import "../App.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const REPORT_YEAR = new Date().getFullYear();
+const REPORT_MODEL_LABEL = import.meta.env.VITE_REPORT_MODEL_LABEL || "AI POWERED";
 
 const CHAPTERS = [
   { key: "Environmental", label: "Executive Summary", sectionId: "section-environmental" },
@@ -321,8 +323,8 @@ export default function AIReports() {
         <section className="ai-report-canvas">
           <div className="ai-report-stage">
             <article className="ai-report-page">
-              <div className="ai-report-model-pill">GPT-4 POWERED</div>
-              <h1>{requestedScope} Performance Report - 2025</h1>
+              <div className="ai-report-model-pill">{REPORT_MODEL_LABEL}</div>
+              <h1>{requestedScope} Performance Report - {REPORT_YEAR}</h1>
               <div className="ai-report-rule" />
 
               {isGenerating ? (
