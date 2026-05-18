@@ -23,11 +23,16 @@ function scopeFromTag(tag, fallback = "ESG") {
 
 export default function Dashboard({ user, onLogout }) {
   const [userDocuments, setUserDocuments] = useState([]);
+  const [reportHistory, setReportHistory] = useState([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [loadingReports, setLoadingReports] = useState(false);
   const [refreshingDocuments, setRefreshingDocuments] = useState(false);
+  const [refreshingReports, setRefreshingReports] = useState(false);
   const [documentsError, setDocumentsError] = useState("");
+  const [reportsError, setReportsError] = useState("");
   const [selectedReportScope, setSelectedReportScope] = useState("ESG");
   const hasLoadedDocuments = useRef(false);
+  const hasLoadedReports = useRef(false);
   const navigate = useNavigate();
 
   const isLoggedIn = !!user?.token;
@@ -68,6 +73,41 @@ export default function Dashboard({ user, onLogout }) {
     refreshUserDocuments();
   }, [refreshUserDocuments]);
 
+  const refreshReportHistory = useCallback(async (options = {}) => {
+    if (!isLoggedIn) return;
+    const keepTableVisible = options.keepTableVisible || hasLoadedReports.current;
+    if (keepTableVisible) {
+      setRefreshingReports(true);
+    } else {
+      setLoadingReports(true);
+    }
+    setReportsError("");
+    try {
+      const res = await fetch(`${API_URL}/reports/user`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${user.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || "Failed to load report history");
+      }
+      const reports = Array.isArray(data) ? data : data?.reports || [];
+      setReportHistory(reports);
+      hasLoadedReports.current = true;
+    } catch (err) {
+      console.error("Failed to fetch report history:", err);
+      setReportHistory([]);
+      setReportsError(err.message || "Failed to load report history");
+    } finally {
+      setLoadingReports(false);
+      setRefreshingReports(false);
+    }
+  }, [isLoggedIn, user?.token]);
+
+  useEffect(() => {
+    refreshReportHistory();
+  }, [refreshReportHistory]);
+
   const deleteUserDocument = async (documentId) => {
     if (!documentId) return;
     const confirmed = window.confirm("Delete this document and all related chunks?");
@@ -94,9 +134,49 @@ export default function Dashboard({ user, onLogout }) {
     }
   };
 
+  const deleteReport = async (reportId) => {
+    if (!reportId) return;
+    const confirmed = window.confirm("Delete this report from history?");
+    if (!confirmed) return;
+
+    const reportIdText = String(reportId);
+    setReportHistory((currentReports) => currentReports.filter((report) => String(report.id) !== reportIdText));
+    setRefreshingReports(true);
+
+    try {
+      const response = await fetch(`${API_URL}/reports/${reportIdText}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${user.token}`,
+        },
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || "Failed to delete report.");
+      }
+
+      await refreshReportHistory({ keepTableVisible: true });
+    } catch (err) {
+      console.error("Report delete error:", err);
+      await refreshReportHistory({ keepTableVisible: true });
+    }
+  };
+
   const openAiReport = (doc, explicitScope) => {
     const scope = doc ? scopeFromTag(doc.tag, selectedReportScope) : explicitScope || selectedReportScope;
+    // Clear the documents section when triggering report generation
+    setUserDocuments([]);
     navigate("/aireports", { state: { doc: doc || null, scope } });
+  };
+
+  const previewReport = (report) => {
+    navigate("/aireports", {
+      state: {
+        reportId: report.id,
+        reportType: report.report_type,
+      },
+    });
   };
 
   return (
@@ -278,10 +358,74 @@ export default function Dashboard({ user, onLogout }) {
                       : "-"}
                   </span>
                   <span className="history-row-actions">
-                    <button className="table-btn" onClick={() => openAiReport(doc)}>
-                      Report
-                    </button>
                     <button className="table-btn danger" onClick={() => deleteUserDocument(doc.id)}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="history-section report-history-section">
+          <div className="history-header">
+            <h2>ESG Report History</h2>
+          </div>
+          {refreshingReports ? <div className="history-refreshing">Refreshing reports...</div> : null}
+          <div className="history-table report-history-table">
+            <div className="history-row history-head">
+              <span>Type</span>
+              <span>Created</span>
+              <span>Actions</span>
+            </div>
+            {!isLoggedIn ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "40px 20px",
+                  gridColumn: "1/-1",
+                }}
+              >
+                <p style={{ marginBottom: "10px", color: "#1F2041" }}>No reports processed yet</p>
+                <p style={{ color: "#666", fontSize: "14px" }}>Login to view and manage your ESG reports</p>
+              </div>
+            ) : loadingReports ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "40px 20px",
+                  gridColumn: "1/-1",
+                }}
+              >
+                <p>Loading your reports...</p>
+              </div>
+            ) : reportsError ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", gridColumn: "1/-1" }}>
+                <p style={{ marginBottom: "10px", color: "#1F2041" }}>Could not load your reports</p>
+                <p style={{ color: "#666", fontSize: "14px" }}>{reportsError}</p>
+              </div>
+            ) : reportHistory.length === 0 ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "40px 20px",
+                  gridColumn: "1/-1",
+                }}
+              >
+                <p style={{ marginBottom: "10px", color: "#1F2041" }}>No reports processed yet</p>
+                <p style={{ color: "#666", fontSize: "14px" }}>Generate a report to populate this history</p>
+              </div>
+            ) : (
+              reportHistory.map((report) => (
+                <div className="history-row" key={report.id}>
+                  <span>{report.report_type || "-"}</span>
+                  <span>{report.created_at ? new Date(report.created_at).toLocaleDateString() : "-"}</span>
+                  <span className="history-row-actions">
+                    <button className="table-btn ghost" onClick={() => previewReport(report)}>
+                      Preview
+                    </button>
+                    <button className="table-btn danger" onClick={() => deleteReport(report.id)}>
                       Delete
                     </button>
                   </span>
