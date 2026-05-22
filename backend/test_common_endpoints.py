@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import importlib
+import json
 
 from fastapi.testclient import TestClient
 import pytest
@@ -362,13 +363,16 @@ def test_reports_user_list_returns_history(client, monkeypatch):
     response = client.get("/reports/user")
 
     assert response.status_code == 200
-    assert response.json() == [
-        {
-            "id": 7,
-            "report_type": "Environmental",
-            "created_at": created_at.isoformat(),
-        }
-    ]
+    assert response.json() == {
+        "status": "success",
+        "reports": [
+            {
+                "id": 7,
+                "report_type": "Environmental",
+                "created_at": created_at.isoformat(),
+            }
+        ],
+    }
 
 
 def test_report_delete_only_removes_owned_report(client, monkeypatch):
@@ -378,8 +382,8 @@ def test_report_delete_only_removes_owned_report(client, monkeypatch):
 
     response = client.delete("/reports/7")
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "deleted", "report_id": "7"}
+    assert response.status_code == 204
+    assert response.content == b""
     assert captured == {"report_id": "7", "user_id": "u1"}
 
 
@@ -452,6 +456,110 @@ def test_report_download_pdf_handles_partial_success_without_data(client, monkey
     assert captured["category"] == "Social"
     assert captured["summary"] == "Brak danych w dokumentach zrodlowych dla tego obszaru."
     assert captured["used_chunks"] == []
+
+
+def test_report_validate_requires_authenticated_user(client):
+    set_auth_user(None)
+
+    response = client.post("/report/7/validate", json={"standard": "GRI"})
+
+    assert response.status_code == 401
+
+
+def test_report_validate_rejects_unknown_standard(client):
+    set_auth_user({"id": "u1", "role": "user"})
+
+    response = client.post("/report/7/validate", json={"standard": "BAD"})
+
+    assert response.status_code == 400
+
+
+def test_report_validate_returns_404_for_missing_owned_report(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main.report_repo, "get_report_by_id", lambda report_id, user_id: None)
+
+    response = client.post("/report/7/validate", json={"standard": "GRI"})
+
+    assert response.status_code == 404
+
+
+def test_report_validate_post_uses_saved_report_content(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    report_json = {"kategoria": "Environmental", "wskazniki_liczbowe": [{"nazwa": "Scope 1", "wartosc": 12}]}
+    used_chunks = ["--- DOKUMENT: raport.docx ---\nScope 1: 12 tCO2e"]
+    captured = {}
+    monkeypatch.setattr(
+        main.report_repo,
+        "get_report_by_id",
+        lambda report_id, user_id: {
+            "id": report_id,
+            "response_text": json.dumps(report_json),
+            "used_chunks": json.dumps(used_chunks),
+        },
+    )
+
+    expected = {
+        "status": "success",
+        "report_id": "7",
+        "standard": "GRI",
+        "overall_status": "partial",
+        "score": 50,
+        "items": [
+            {
+                "code": "GRI 305-1",
+                "label": "Direct Scope 1 GHG emissions",
+                "present": True,
+                "evidence": "Scope 1 obecne.",
+                "recommendation": "",
+            }
+        ],
+        "summary": "Walidacja testowa.",
+    }
+
+    def fake_validate_report_content(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(dict=lambda: expected)
+
+    monkeypatch.setattr(main, "validate_report_content", fake_validate_report_content)
+
+    response = client.post("/report/7/validate", json={"standard": "GRI"})
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert captured["report_id"] == "7"
+    assert captured["standard"] == "GRI"
+    assert captured["report_content"] == report_json
+    assert captured["used_chunks"] == used_chunks
+
+
+def test_report_validate_get_alias_uses_query_standard(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(
+        main.report_repo,
+        "get_report_by_id",
+        lambda report_id, user_id: {
+            "id": report_id,
+            "response_text": json.dumps({"kategoria": "ESG"}),
+            "used_chunks": None,
+        },
+    )
+
+    expected = {
+        "status": "success",
+        "report_id": "9",
+        "standard": "SASB",
+        "overall_status": "missing",
+        "score": 0,
+        "items": [],
+        "summary": "Brak danych.",
+    }
+
+    monkeypatch.setattr(main, "validate_report_content", lambda **kwargs: SimpleNamespace(dict=lambda: expected))
+
+    response = client.get("/report/9/validate?standard=SASB")
+
+    assert response.status_code == 200
+    assert response.json() == expected
 
 
 # -------------------------
