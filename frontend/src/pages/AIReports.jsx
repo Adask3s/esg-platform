@@ -13,6 +13,11 @@ const CHAPTERS = [
 ];
 
 const LOADING_STATES = new Set(["QUEUED", "PENDING", "STARTED", "PROGRESS", "RETRY"]);
+const VALIDATION_STANDARDS = [
+  { value: "GRI", label: "GRI" },
+  { value: "SASB", label: "SASB" },
+  { value: "TCFD", label: "TCFD" },
+];
 
 function mapTagToApi(tag) {
   if (!tag) return "ESG";
@@ -74,6 +79,79 @@ function MetricList({ indicators, isGenerating }) {
   );
 }
 
+function ValidationPanel({
+  standard,
+  onStandardChange,
+  onValidate,
+  status,
+  error,
+  result,
+  disabled,
+  reportId,
+}) {
+  const items = Array.isArray(result?.items) ? result.items : [];
+  const isLoading = status === "loading";
+
+  return (
+    <div className="ai-report-validation-panel">
+      <div className="ai-report-validation-header">
+        <div>
+          <h3>Standards validation</h3>
+          <p>{reportId ? `Report ID: ${reportId}` : "Report is not saved yet."}</p>
+        </div>
+        <div className="ai-report-validation-controls">
+          <select
+            value={standard}
+            onChange={(event) => onStandardChange(event.target.value)}
+            disabled={isLoading}
+            aria-label="Validation standard"
+          >
+            {VALIDATION_STANDARDS.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={onValidate} disabled={disabled || isLoading}>
+            {isLoading ? "Validating..." : "Validate"}
+          </button>
+        </div>
+      </div>
+
+      {error ? <p className="ai-report-validation-error">{error}</p> : null}
+
+      {result ? (
+        <>
+          <div className="ai-report-validation-score">
+            <strong>{result.score ?? 0}%</strong>
+            <span>{result.overall_status || "partial"}</span>
+          </div>
+          <p className="ai-report-muted">{result.summary}</p>
+          <ul className="ai-report-validation-list">
+            {items.map((item) => (
+              <li key={item.code} className={item.present ? "is-present" : "is-missing"}>
+                <span className="ai-report-validation-mark">{item.present ? "\u2713" : "\u2717"}</span>
+                <div>
+                  <strong>
+                    {item.code} {item.present ? "obecne" : "brakuje"}
+                  </strong>
+                  <p>{item.label}</p>
+                  {item.evidence ? <span>{item.evidence}</span> : null}
+                  {!item.present && item.recommendation ? <span>{item.recommendation}</span> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="ai-report-muted">
+          {disabled ? "Validation is available after the report is saved." : "Choose a standard and validate the report."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function filenameFromDisposition(disposition) {
   if (!disposition) return "raport_ESG.pdf";
   const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -94,6 +172,10 @@ export default function AIReports() {
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [reportResult, setReportResult] = useState(null);
   const [reportMeta, setReportMeta] = useState(null);
+  const [validationStandard, setValidationStandard] = useState("GRI");
+  const [validationStatus, setValidationStatus] = useState("idle");
+  const [validationResult, setValidationResult] = useState(null);
+  const [validationError, setValidationError] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
   const activeReportDoc = location.state?.doc || null;
@@ -140,6 +222,9 @@ export default function AIReports() {
       setReportResult(null);
       setReportMeta(null);
       setPdfStatus("");
+      setValidationResult(null);
+      setValidationError("");
+      setValidationStatus("idle");
 
       const response = await fetch(`${API_URL}/reports/${savedReportId}`, {
         headers: {
@@ -152,7 +237,7 @@ export default function AIReports() {
         throw new Error(data?.detail || "Failed to load saved report.");
       }
 
-      let parsedReport = data?.response_text || null;
+      let parsedReport = data?.content ?? data?.response_text ?? null;
       if (typeof parsedReport === "string") {
         try {
           parsedReport = JSON.parse(parsedReport);
@@ -163,8 +248,9 @@ export default function AIReports() {
 
       setReportMeta({
         status: "saved",
-        report_type: data?.report_type || savedReportType || "ESG",
-        created_at: data?.created_at || null,
+        report_id: data?.metadata?.id || savedReportId,
+        report_type: data?.metadata?.report_type || data?.report_type || savedReportType || "ESG",
+        created_at: data?.metadata?.created_at || data?.created_at || null,
         message: "Saved report preview",
       });
       setReportResult(parsedReport || {});
@@ -230,7 +316,7 @@ export default function AIReports() {
   useEffect(() => {
     try {
       window.scrollTo({ top: 0, left: 0 });
-    } catch (e) {
+    } catch {
       // ignore
     }
   }, []);
@@ -371,6 +457,53 @@ export default function AIReports() {
     }
   };
 
+  const validationReportId = savedReportId || reportMeta?.report_id || null;
+
+  const updateValidationStandard = (nextStandard) => {
+    setValidationStandard(nextStandard);
+    setValidationResult(null);
+    setValidationError("");
+    setValidationStatus("idle");
+  };
+
+  const validateReport = async () => {
+    if (!token) {
+      navigate("/login");
+      return;
+    }
+
+    if (!validationReportId) {
+      setValidationError("Validation is available after the report is saved.");
+      return;
+    }
+
+    try {
+      setValidationError("");
+      setValidationStatus("loading");
+
+      const response = await fetch(`${API_URL}/report/${validationReportId}/validate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ standard: validationStandard }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || "Report validation failed.");
+      }
+
+      setValidationResult(data);
+      setValidationStatus("success");
+    } catch (err) {
+      setValidationStatus("error");
+      setValidationResult(null);
+      setValidationError(err.message || "Unexpected report validation error.");
+    }
+  };
+
   const displayScope = reportResult?.kategoria || reportMeta?.report_type || requestedScope;
   const showLoadingPanel = isGenerating || isPreviewLoading;
 
@@ -493,6 +626,16 @@ export default function AIReports() {
                   emptyText={showLoadingPanel ? "Rekomendacje zostaną wygenerowane po analizie." : "Brak rekomendacji."}
                 />
                 <h3>Standards and legal context</h3>
+                <ValidationPanel
+                  standard={validationStandard}
+                  onStandardChange={updateValidationStandard}
+                  onValidate={validateReport}
+                  status={validationStatus}
+                  error={validationError}
+                  result={validationResult}
+                  disabled={!validationReportId || showLoadingPanel}
+                  reportId={validationReportId}
+                />
                 <ReportList
                   items={standardCompliance}
                   emptyText={legalSummary || "Brak oceny zgodności ze standardami."}

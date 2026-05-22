@@ -6,13 +6,19 @@ import tempfile
 import shutil
 from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response, APIRouter
-from typing import List, Optional, Literal
+from typing import Any, List, Optional, Literal
 from fastapi.middleware.cors import CORSMiddleware
+import database.report_repo as report_repo
 from database.report_repo import save_report
 from database.knowledge_service import add_document_to_knowledge_base, check_knowledge_document_hash
 from database.user_documents_service import check_user_document_hash
 from .utils.files import save_upload_streamed, sanitize_filename, validate_file_on_disk, calculate_file_hash
 from .utils.pdf_generator import ReportData, generate_report_pdf
+from .report_validation import (
+    ReportValidationRequest,
+    normalize_validation_standard,
+    validate_report_content,
+)
 from pydantic import BaseModel, Field
 import logging
 import json
@@ -636,6 +642,87 @@ async def download_report_pdf_from_task(task_id: str, user=Depends(get_current_u
         logging.error(f"Błąd generowania PDF: {str(e)}")
         raise HTTPException(status_code=500, detail="Wewnętrzny błąd serwera podczas konwersji do PDF.")
 
+def _parse_report_json_for_validation(raw_response_text: Any) -> dict[str, Any]:
+    if isinstance(raw_response_text, dict):
+        return raw_response_text
+    try:
+        parsed = json.loads(raw_response_text or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Raport nie zawiera poprawnego JSON do walidacji.") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="Raport JSON musi byc obiektem.")
+    return parsed
+
+
+def _parse_used_chunks_for_validation(raw_used_chunks: Any) -> list[Any]:
+    if not raw_used_chunks:
+        return []
+    if isinstance(raw_used_chunks, list):
+        return raw_used_chunks
+    if isinstance(raw_used_chunks, str):
+        try:
+            parsed = json.loads(raw_used_chunks)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _validate_stored_report(report_id: str, raw_standard: str, user: dict[str, Any]) -> dict[str, Any]:
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        standard = normalize_validation_standard(raw_standard)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    user_id = str(user["id"])
+    try:
+        report = report_repo.get_report_by_id(report_id, user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Blad bazy podczas pobierania raportu: {exc}") from exc
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Raport nie istnieje lub brak dostepu.")
+
+    report_content = _parse_report_json_for_validation(report.get("response_text"))
+    used_chunks = _parse_used_chunks_for_validation(report.get("used_chunks"))
+
+    try:
+        validation_result = validate_report_content(
+            report_id=str(report["id"]),
+            standard=standard,
+            report_content=report_content,
+            used_chunks=used_chunks,
+        )
+    except Exception as exc:
+        logging.exception("Report standards validation failed")
+        raise HTTPException(status_code=500, detail=f"Blad walidacji raportu: {exc}") from exc
+
+    return validation_result.dict()
+
+
+@app.post("/report/{report_id}/validate", tags=["Reports"])
+async def validate_report_endpoint(
+    report_id: str,
+    request: ReportValidationRequest,
+    user=Depends(get_current_user),
+):
+    """Waliduje zapisany raport ESG wzgledem GRI, SASB albo TCFD."""
+    return _validate_stored_report(report_id, request.standard, user)
+
+
+@app.get("/report/{report_id}/validate", tags=["Reports"])
+async def validate_report_get_endpoint(
+    report_id: str,
+    standard: str = "GRI",
+    user=Depends(get_current_user),
+):
+    """GET alias dla walidacji raportu; standard podawany jako query param."""
+    return _validate_stored_report(report_id, standard, user)
+
+
 # ====================
 
 @app.post("/knowledge/upload")
@@ -988,7 +1075,7 @@ async def get_user_reports_endpoint(user = Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        rows = get_reports_by_user(str(user['id']))
+        rows = report_repo.get_reports_by_user(str(user['id']))
         # rows to lista krotek (id, report_type, created_at) zdefiniowana w report_repo.py
         reports = [
             {"id": r[0], "report_type": r[1], "created_at": r[2]}
@@ -1007,7 +1094,7 @@ async def get_single_report_endpoint(report_id: str, user = Depends(get_current_
     user_id = str(user['id'])
 
     try:
-        report = get_report_by_id(report_id, user_id)
+        report = report_repo.get_report_by_id(report_id, user_id)
         if not report:
             raise HTTPException(status_code=404, detail="Raport nie istnieje lub brak dostępu.")
 
@@ -1047,14 +1134,8 @@ def delete_single_report_endpoint(report_id: str, user=Depends(get_current_user)
 
     user_id = str(user['id'])
 
-    # Import funkcji z repozytorium (upewnij się, że ścieżka się zgadza z Twoim plikiem)
     try:
-        from database.report_repo import delete_report
-    except ImportError:
-        from backend.database.report_repo import delete_report
-
-    try:
-        success = delete_report(report_id, user_id)
+        success = report_repo.delete_report(report_id, user_id)
         if not success:
             raise HTTPException(status_code=404, detail="Raport nie istnieje lub nie masz do niego dostępu.")
 

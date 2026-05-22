@@ -922,6 +922,154 @@ html {
   line-height: 1.55;
 }
 
+.ai-report-validation-panel {
+  border: 1px solid #d8d6cf;
+  border-left: 4px solid #2d7f63;
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 12px;
+  margin: 12px 0 16px;
+}
+
+.ai-report-validation-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.ai-report-validation-header h3 {
+  margin-top: 0;
+}
+
+.ai-report-validation-header p {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #77757b;
+}
+
+.ai-report-validation-controls {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-report-validation-controls select,
+.ai-report-validation-controls button {
+  min-height: 32px;
+  border-radius: 8px;
+  border: 1px solid #c9c5b8;
+  background: #fff;
+  color: #1d1f48;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ai-report-validation-controls select {
+  padding: 0 28px 0 10px;
+}
+
+.ai-report-validation-controls button {
+  padding: 0 12px;
+  background: #1d1f48;
+  color: #fff;
+  cursor: pointer;
+}
+
+.ai-report-validation-controls button:disabled,
+.ai-report-validation-controls select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.ai-report-validation-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff0ed;
+  color: #a83b2c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ai-report-validation-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #edf7f0;
+  color: #1e6f48;
+}
+
+.ai-report-validation-score strong {
+  font-size: 16px;
+}
+
+.ai-report-validation-score span {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.ai-report-validation-list {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.ai-report-validation-list li {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 9px;
+  min-width: 0;
+  border: 1px solid #e1ded5;
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px;
+}
+
+.ai-report-validation-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ai-report-validation-list li.is-present .ai-report-validation-mark {
+  background: #dff3e6;
+  color: #197347;
+}
+
+.ai-report-validation-list li.is-missing .ai-report-validation-mark {
+  background: #ffe4df;
+  color: #b94231;
+}
+
+.ai-report-validation-list strong {
+  display: block;
+  color: #1d1f48;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ai-report-validation-list p,
+.ai-report-validation-list span {
+  display: block;
+  margin: 3px 0 0;
+  color: #55525b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .ai-report-metric-list {
   display: grid;
   gap: 8px;
