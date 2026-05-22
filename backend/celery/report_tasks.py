@@ -16,6 +16,7 @@ import openai
 from openai import OpenAI
 
 from backend.celery.celery_app import celery_app
+from backend.report_validation import CHECKLISTS, normalize_validation_standard
 
 # Transient errors — retryowalne
 TRANSIENT_EXC = (
@@ -78,7 +79,19 @@ def _split_report_chunks_by_source(found_chunks: list[str]) -> tuple[list[str], 
     return user_chunks, kb_chunks
 
 
-def _build_report_prompt(target_tag: str, user_context: str, kb_context: str, hint: str) -> str:
+def _format_standard_checklist(standard: str) -> str:
+    checklist = CHECKLISTS[standard]
+    return "\n".join(f"- {item['code']}: {item['label']}" for item in checklist)
+
+
+def _build_report_prompt(
+    target_tag: str,
+    user_context: str,
+    kb_context: str,
+    hint: str,
+    reporting_standard: str,
+) -> str:
+    standard_checklist = _format_standard_checklist(reporting_standard)
     return f"""Jesteś starszym konsultantem ESG dla branży budowlanej. Przygotowujesz maksymalnie szczegółowy, profesjonalny raport dla zakresu: {target_tag}.
 
 Masz przed sobą dwa całkowicie niezależne, fizycznie oddzielone zbiory danych:
@@ -97,10 +110,15 @@ INSTRUKCJE KRYTYCZNE (ZŁAM JEDNĄ, A OBLEJESZ):
 5. SZCZEGÓŁOWOŚĆ: raport ma wyglądać jak prawdziwy raport zarządczy, nie krótka notatka. Pisz pełnymi akapitami, pokazuj kontekst, ocenę istotności, implikacje i rekomendacje.
 6. ZAKRES: jeśli zakres to Environmental, Social albo Governance, trzymaj się wyłącznie tego filaru. Jeśli zakres to ESG, opisz wszystkie trzy filary.
 7. SPECJALIZACJA: {hint}
+8. STANDARD RAPORTOWANIA: raport ma byc przygotowany pod standard {reporting_standard}. Uzyj checklisty standardu jako wymagan strukturalnych i merytorycznych. Jesli dane firmy nie pokrywaja kryterium, wskaz to jako luke danych zamiast wymyslac dane.
+
+CHECKLISTA STANDARDU {reporting_standard}:
+{standard_checklist}
 
 OCZEKIWANA, ŚCISŁA STRUKTURA JSON (Zastąp tagi <...> faktycznymi danymi z tekstu):
 {{
   "kategoria": "{target_tag}",
+  "standard_raportowania": "{reporting_standard}",
   "streszczenie_wykonawcze": "<Minimum 2-4 rozbudowane akapity po polsku: najważniejsze fakty, skala danych, ogólna ocena i najpilniejsze wnioski dla zarządu. Bez liczb spoza ZBIORU 1.>",
   "zakres_i_metodyka": "<Opisz, jakie dokumenty i typy danych wykorzystano, jak rozdzielasz dokumenty firmy od bazy wiedzy, jakie są ograniczenia danych i dla jakiego zakresu powstał raport.>",
   "wskazniki_liczbowe": [
@@ -124,7 +142,7 @@ OCZEKIWANA, ŚCISŁA STRUKTURA JSON (Zastąp tagi <...> faktycznymi danymi z tek
      "<Konkretna rekomendacja zarządcza albo operacyjna wynikająca z danych>"
   ],
   "zgodnosc_ze_standardami": [
-     "<Ocena powiązania danych ze standardami/regulacjami z bazy wiedzy, bez kopiowania cudzych wskaźników liczbowych>"
+     "<Ocena zgodności raportu z wybranym standardem {reporting_standard}: odnieś się do checklisty powyżej, wskaż obecne ujawnienia i braki danych bez wymyślania wskaźników liczbowych>"
   ],
   "wnioski_i_zgodnosc_prawna": "<Rozbudowane podsumowanie zgodności prawnej i gotowości raportowej: 2-4 akapity po polsku.>"
 }}
@@ -146,6 +164,7 @@ def generate_report_task(
     self,
     user_id: str,
     tag: Optional[str] = None,
+    standard: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generuj raport ESG: RAG retrieval -> prompt -> OpenAI -> save_report.
@@ -178,6 +197,7 @@ def generate_report_task(
     # Ustalenie kontekstu zapytania
     raw_tag = tag.strip() if tag and tag.strip() else "ESG"
     target_tag = TAG_MAPPING.get(raw_tag, raw_tag)
+    reporting_standard = normalize_validation_standard(standard or "GRI")
 
     filter_candidates = _report_filter_candidates(target_tag)
     db_filter_tag = filter_candidates[0]
@@ -207,6 +227,7 @@ def generate_report_task(
             "status": "partial_success",
             "kategoria": target_tag,
             "message": "Brak danych w dokumentach źródłowych dla tego obszaru.",
+            "standard": reporting_standard,
             "used_chunks": [],
             "applied_filter": db_filter_tag,
             "data": None,
@@ -240,7 +261,7 @@ def generate_report_task(
     user_context = "\n\n".join(user_chunks) if user_chunks else "Brak danych z raportów firmy."
     kb_context = "\n\n".join(kb_chunks) if kb_chunks else "Brak danych prawnych z bazy wiedzy."
     hint = TAG_HINTS.get(target_tag, TAG_HINTS["ESG"])
-    report_prompt = _build_report_prompt(target_tag, user_context, kb_context, hint)
+    report_prompt = _build_report_prompt(target_tag, user_context, kb_context, hint, reporting_standard)
 
     # === OpenAI call ===
     self.update_state(
@@ -274,6 +295,9 @@ def generate_report_task(
         # Permanent failure — nie retryujemy złego JSON-a
         raise ValueError(f"AI zwrócił nieprawidłowy JSON: {exc}") from exc
 
+    report_json["standard_raportowania"] = reporting_standard
+    raw_ai_response = json.dumps(report_json, ensure_ascii=False)
+
     # ========== Zapis raportu ===============
     self.update_state(
         state="PROGRESS",
@@ -292,7 +316,7 @@ def generate_report_task(
 
         report_id = save_report(
             user_id=user_id,
-            input_text=f"Generowanie raportu: {target_tag}",
+            input_text=f"Generowanie raportu: {target_tag} / {reporting_standard}",
             response_text=raw_ai_response,
             report_type=target_tag,
             used_chunks=used_chunks_str  # WYSYŁAMY CHUNKI DO REPOZYTORIUM
@@ -304,6 +328,7 @@ def generate_report_task(
         "status": "success",
         "mode": "report_generation",
         "kategoria": target_tag,
+        "standard": reporting_standard,
         "rag_used": True,
         "applied_filter": db_filter_tag,
         "report_id": report_id,

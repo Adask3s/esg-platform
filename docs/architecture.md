@@ -79,12 +79,12 @@ is stored as JSON text.
 
 ## Report Pipeline
 
-1. Frontend posts `{ "report_scope": "Environmental" | "Social" | "Governance" | "ESG" }` to `/report/generate`.
+1. Frontend posts `{ "report_scope": "Environmental" | "Social" | "Governance" | "ESG", "standard": "GRI" | "SASB" | "TCFD" }` to `/report/generate`.
 2. FastAPI queues `backend.generate_report` and registers task ownership.
 3. Celery retrieves chunks through `match_chunks2`.
 4. Partial scopes try tag aliases only; `ESG` retrieves without a tag filter.
 5. The report task separates company chunks from legal/knowledge-base chunks.
-6. OpenAI `gpt-4o-mini` returns structured JSON.
+6. OpenAI `gpt-4o-mini` returns structured JSON aligned to the selected standard checklist.
 7. The JSON and `used_chunks` are saved to report history when possible and
    returned as the Celery task result.
 8. `/report/download/{task_id}` reads the cached task result and renders PDF via

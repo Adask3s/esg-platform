@@ -128,7 +128,7 @@ def test_report_generate_requires_user_id(client):
 
 def test_report_generate_queued_for_valid_user(client, monkeypatch):
     set_auth_user({"id": "u1", "role": "user"})
-    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, report_scope: SimpleNamespace(id="rep-1"))
+    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, report_scope, standard: SimpleNamespace(id="rep-1"))
 
     response = client.post("/report/generate", json={"report_scope": "Environmental"})
     assert response.status_code == 200

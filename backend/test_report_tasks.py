@@ -37,8 +37,11 @@ def test_generate_report_task_returns_saved_report_id(monkeypatch):
         "wskazniki_liczbowe": [{"nazwa": "Scope 1", "wartosc": 12, "jednostka": "tCO2e"}],
     }
 
+    captured = {}
+
     class FakeCompletions:
         def create(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
             return SimpleNamespace(
                 choices=[
                     SimpleNamespace(
@@ -57,11 +60,14 @@ def test_generate_report_task_returns_saved_report_id(monkeypatch):
     monkeypatch.setattr(report_tasks, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(report_tasks.generate_report_task, "update_state", lambda *args, **kwargs: None)
 
-    result = report_tasks.generate_report_task.run("u1", "Environmental")
+    result = report_tasks.generate_report_task.run("u1", "Environmental", "SASB")
 
     assert result["status"] == "success"
     assert result["report_id"] == 42
-    assert result["data"] == report_payload
+    assert result["standard"] == "SASB"
+    assert result["data"] == {**report_payload, "standard_raportowania": "SASB"}
+    assert "CHECKLISTA STANDARDU SASB" in captured["messages"][1]["content"]
+    assert "IF-EN-160a.1" in captured["messages"][1]["content"]
 
 
 def test_validation_score_and_status_are_computed_from_items_not_llm_score():
