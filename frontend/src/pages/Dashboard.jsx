@@ -12,6 +12,12 @@ const REPORT_SCOPES = [
   { value: "Governance", label: "Governance" },
 ];
 
+const REPORT_STANDARDS = [
+  { value: "GRI", label: "GRI" },
+  { value: "SASB", label: "SASB" },
+  { value: "TCFD", label: "TCFD" },
+];
+
 function scopeFromTag(tag, fallback = "ESG") {
   const normalized = String(tag || "").trim().toLowerCase();
   if (normalized.startsWith("env") || normalized === "e") return "Environmental";
@@ -31,6 +37,7 @@ export default function Dashboard({ user, onLogout }) {
   const [documentsError, setDocumentsError] = useState("");
   const [reportsError, setReportsError] = useState("");
   const [selectedReportScope, setSelectedReportScope] = useState("ESG");
+  const [selectedReportStandard, setSelectedReportStandard] = useState("GRI");
   const hasLoadedDocuments = useRef(false);
   const hasLoadedReports = useRef(false);
   const navigate = useNavigate();
@@ -163,11 +170,12 @@ export default function Dashboard({ user, onLogout }) {
     }
   };
 
-  const openAiReport = (doc, explicitScope) => {
+  const openAiReport = (doc, explicitScope, explicitStandard) => {
     const scope = doc ? scopeFromTag(doc.tag, selectedReportScope) : explicitScope || selectedReportScope;
+    const standard = explicitStandard || selectedReportStandard;
     // Clear the documents section when triggering report generation
     setUserDocuments([]);
-    navigate("/aireports", { state: { doc: doc || null, scope } });
+    navigate("/aireports", { state: { doc: doc || null, scope, standard } });
   };
 
   const previewReport = (report) => {
@@ -265,10 +273,26 @@ export default function Dashboard({ user, onLogout }) {
                   </option>
                 ))}
               </select>
+              <label className="history-scope-label" htmlFor="report-standard">
+                Standard
+              </label>
+              <select
+                id="report-standard"
+                className="history-scope-select"
+                value={selectedReportStandard}
+                onChange={(event) => setSelectedReportStandard(event.target.value)}
+                disabled={!userDocuments.length}
+              >
+                {REPORT_STANDARDS.map((standard) => (
+                  <option key={standard.value} value={standard.value}>
+                    {standard.label}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 className="table-btn history-generate-btn"
-                onClick={() => openAiReport(null, selectedReportScope)}
+                onClick={() => openAiReport(null, selectedReportScope, selectedReportStandard)}
                 disabled={!userDocuments.length}
               >
                 Generate Report

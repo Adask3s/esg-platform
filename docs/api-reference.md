@@ -168,9 +168,14 @@ Request body:
 
 ```json
 {
-  "report_scope": "Environmental | Social | Governance | ESG"
+  "report_scope": "Environmental | Social | Governance | ESG",
+  "standard": "GRI | SASB | TCFD"
 }
 ```
+
+`standard` is optional for backward compatibility. If omitted, the backend uses
+`GRI`. The selected standard is injected into the report-generation prompt with
+the static checklist from `backend/report_validation.py`.
 
 Response:
 
@@ -186,14 +191,16 @@ Partial scopes (`Environmental`, `Social`, `Governance`) try tag aliases only.
 `ESG` runs without a tag filter. The task result contains:
 - `status`: `success` or `partial_success`
 - `kategoria`
+- `standard`: selected reporting standard
 - `applied_filter`
 - `report_id`: stored report id when database persistence succeeds
 - `used_chunks`
 - `data`: structured report JSON or `null`
 
 The report JSON keeps legacy fields and may include richer fields:
-`streszczenie_wykonawcze`, `zakres_i_metodyka`, `szczegolowa_analiza`,
-`luki_w_danych`, `rekomendacje`, `zgodnosc_ze_standardami`.
+`standard_raportowania`, `streszczenie_wykonawcze`, `zakres_i_metodyka`,
+`szczegolowa_analiza`, `luki_w_danych`, `rekomendacje`,
+`zgodnosc_ze_standardami`.
 
 ### GET `/report/download/{task_id}`
 

@@ -78,7 +78,8 @@ The full `ESG` report runs without a tag filter.
 The Celery task:
 1. Retrieves RAG context.
 2. Splits chunks into company data and legal/knowledge-base context.
-3. Builds a strict JSON prompt.
+3. Builds a strict JSON prompt using the selected reporting standard checklist
+   (`GRI`, `SASB` or `TCFD`; defaults to `GRI` for legacy requests).
 4. Calls OpenAI `gpt-4o-mini`.
 5. Parses the response as JSON.
 6. Saves report history when possible.
@@ -87,6 +88,7 @@ The Celery task:
 The structured payload includes legacy fields plus optional richer fields:
 
 - `streszczenie_wykonawcze`
+- `standard_raportowania`
 - `zakres_i_metodyka`
 - `szczegolowa_analiza`
 - `luki_w_danych`

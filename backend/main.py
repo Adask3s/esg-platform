@@ -572,6 +572,8 @@ def get_status(
 class ReportGenerateRequest(BaseModel):
     report_scope: Literal["Environmental", "Social", "Governance", "ESG"] = Field(..., description="Zakres raportu. Dozwolone wyłącznie pełne nazwy: Environmental, Social, Governance, ESG")
 
+    standard: Optional[Literal["GRI", "SASB", "TCFD"]] = Field("GRI", description="Standard raportowania. Domyslnie GRI.")
+
 @app.post("/report/generate")
 async def generate_report(request: ReportGenerateRequest, user=Depends(get_current_user)):
     """
@@ -583,7 +585,7 @@ async def generate_report(request: ReportGenerateRequest, user=Depends(get_curre
         raise HTTPException(status_code=401, detail="Brak autoryzacji. Musisz być zalogowany.")
 
     user_id = str(user['id'])
-    async_result = generate_report_task.delay(user_id, request.report_scope)
+    async_result = generate_report_task.delay(user_id, request.report_scope, request.standard or "GRI")
     _register_task_owner(async_result.id, user_id)
 
     return {

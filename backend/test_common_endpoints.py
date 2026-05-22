@@ -348,11 +348,49 @@ def test_report_generate_requires_user_id(client):
 
 def test_report_generate_queued(client, monkeypatch):
     set_auth_user({"id": "u1", "role": "user"})
-    monkeypatch.setattr(main.generate_report_task, "delay", lambda user_id, report_scope: SimpleNamespace(id="report-1"))
+    captured = {}
+    monkeypatch.setattr(
+        main.generate_report_task,
+        "delay",
+        lambda user_id, report_scope, standard: captured.update({
+            "user_id": user_id,
+            "report_scope": report_scope,
+            "standard": standard,
+        }) or SimpleNamespace(id="report-1"),
+    )
 
     response = client.post("/report/generate", json={"report_scope": "Environmental"})
     assert response.status_code == 200
     assert response.json()["task_id"] == "report-1"
+    assert captured == {"user_id": "u1", "report_scope": "Environmental", "standard": "GRI"}
+
+
+def test_report_generate_passes_selected_standard(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    captured = {}
+    monkeypatch.setattr(
+        main.generate_report_task,
+        "delay",
+        lambda user_id, report_scope, standard: captured.update({
+            "user_id": user_id,
+            "report_scope": report_scope,
+            "standard": standard,
+        }) or SimpleNamespace(id="report-1"),
+    )
+
+    response = client.post("/report/generate", json={"report_scope": "ESG", "standard": "TCFD"})
+
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "report-1"
+    assert captured == {"user_id": "u1", "report_scope": "ESG", "standard": "TCFD"}
+
+
+def test_report_generate_rejects_unknown_standard(client):
+    set_auth_user({"id": "u1", "role": "user"})
+
+    response = client.post("/report/generate", json={"report_scope": "ESG", "standard": "BAD"})
+
+    assert response.status_code == 422
 
 
 def test_reports_user_list_returns_history(client, monkeypatch):

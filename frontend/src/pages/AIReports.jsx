@@ -182,6 +182,7 @@ export default function AIReports() {
   const savedReportId = location.state?.reportId || null;
   const savedReportType = location.state?.reportType || null;
   const requestedScope = location.state?.scope || mapTagToApi(activeReportDoc?.tag);
+  const requestedStandard = location.state?.standard || "GRI";
   const isSavedReportPreview = !!savedReportId;
   const reportSourceLabel = isSavedReportPreview
     ? `Saved report ${savedReportId}${savedReportType ? ` · ${savedReportType}` : ""}`
@@ -225,6 +226,7 @@ export default function AIReports() {
       setValidationResult(null);
       setValidationError("");
       setValidationStatus("idle");
+      setValidationStandard(requestedStandard);
 
       const response = await fetch(`${API_URL}/reports/${savedReportId}`, {
         headers: {
@@ -245,10 +247,13 @@ export default function AIReports() {
           parsedReport = null;
         }
       }
+      const savedStandard = parsedReport?.standard_raportowania || data?.metadata?.standard || requestedStandard;
+      setValidationStandard(savedStandard);
 
       setReportMeta({
         status: "saved",
         report_id: data?.metadata?.id || savedReportId,
+        standard: savedStandard,
         report_type: data?.metadata?.report_type || data?.report_type || savedReportType || "ESG",
         created_at: data?.metadata?.created_at || data?.created_at || null,
         message: "Saved report preview",
@@ -262,9 +267,9 @@ export default function AIReports() {
       setTaskStagePl("");
       setError(err.message || "Unexpected saved report preview error.");
     }
-  }, [navigate, savedReportId, savedReportType, token]);
+  }, [navigate, requestedStandard, savedReportId, savedReportType, token]);
 
-  const launchReportGeneration = useCallback(async (tag) => {
+  const launchReportGeneration = useCallback(async (tag, standard) => {
     if (!token) {
       navigate("/login");
       return;
@@ -279,6 +284,10 @@ export default function AIReports() {
       setReportResult(null);
       setReportMeta(null);
       setPdfStatus("");
+      setValidationStandard(standard || "GRI");
+      setValidationResult(null);
+      setValidationError("");
+      setValidationStatus("idle");
 
       const response = await fetch(`${API_URL}/report/generate`, {
         method: "POST",
@@ -286,7 +295,7 @@ export default function AIReports() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ report_scope: tag }),
+        body: JSON.stringify({ report_scope: tag, standard: standard || "GRI" }),
       });
 
       const data = await response.json();
@@ -310,8 +319,8 @@ export default function AIReports() {
       return;
     }
 
-    launchReportGeneration(requestedScope);
-  }, [isSavedReportPreview, launchReportGeneration, loadSavedReport, requestedScope]);
+    launchReportGeneration(requestedScope, requestedStandard);
+  }, [isSavedReportPreview, launchReportGeneration, loadSavedReport, requestedScope, requestedStandard]);
 
   useEffect(() => {
     try {
@@ -349,6 +358,7 @@ export default function AIReports() {
           const payload = result?.data || null;
           setReportMeta(result);
           setReportResult(payload);
+          setValidationStandard(result?.standard || payload?.standard_raportowania || requestedStandard);
           setPdfStatus(result?.status === "partial_success" ? "Empty report PDF ready for export." : "Report ready for PDF export.");
           setTaskStagePl("Gotowe");
           clearInterval(intervalId);
@@ -371,7 +381,7 @@ export default function AIReports() {
       isCancelled = true;
       clearInterval(intervalId);
     };
-  }, [taskId, token]);
+  }, [requestedStandard, taskId, token]);
 
   useEffect(() => {
     const sections = [
