@@ -187,6 +187,7 @@ Partial scopes (`Environmental`, `Social`, `Governance`) try tag aliases only.
 - `status`: `success` or `partial_success`
 - `kategoria`
 - `applied_filter`
+- `report_id`: stored report id when database persistence succeeds
 - `used_chunks`
 - `data`: structured report JSON or `null`
 
@@ -206,15 +207,68 @@ Behavior:
 - For `partial_success`, renders an empty-state PDF with the message.
 - Returns `application/pdf` with `Content-Disposition`.
 
+### POST `/report/{report_id}/validate`
+
+Validates a stored report against a selected disclosure standard. The validation
+uses the stored report JSON and parsed `used_chunks`, calls the LLM once, and
+does not persist the validation result.
+
+Request body:
+
+```json
+{
+  "standard": "GRI | SASB | TCFD"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "report_id": "123",
+  "standard": "GRI",
+  "overall_status": "complete | partial | missing",
+  "score": 75,
+  "items": [
+    {
+      "code": "GRI 305-1",
+      "label": "Direct Scope 1 GHG emissions",
+      "present": true,
+      "evidence": "Krotka parafraza z raportu.",
+      "recommendation": "Co uzupelnic, jesli brakuje."
+    }
+  ],
+  "summary": "Krotka ocena zgodnosci."
+}
+```
+
+Supported v1 checklists:
+- `GRI`: GRI 305-1 through 305-5 and GRI 401-1 through 401-3.
+- `SASB`: Engineering & Construction Services metrics, including
+  `IF-EN-160a.1`, `IF-EN-160a.2`, `IF-EN-250a.1`, `IF-EN-250a.2`,
+  `IF-EN-320a.1`, `IF-EN-410a.1`, `IF-EN-410a.2`, `IF-EN-410b.1`,
+  `IF-EN-510a.1`.
+- `TCFD`: the 11 recommended disclosures across governance, strategy, risk
+  management, and metrics and targets.
+
+The v1 checklists are static backend definitions, not knowledge-base lookups at
+request time. The LLM marks individual items as present or missing; the backend
+then recomputes `score` and `overall_status` from normalized `items` so the
+summary percentage always matches the green/red checklist.
+
+### GET `/report/{report_id}/validate?standard=GRI`
+
+GET alias for the same validation logic. If `standard` is omitted, `GRI` is used.
+
 ### GET `/reports/user`
 
-Lists report history for a user. Current code accepts `user_id` as a query
-parameter.
+Lists report history for the authenticated user.
 
 ### GET `/reports/{report_id}`
 
-Returns one stored report for `report_id` and query `user_id`, including parsed
-JSON content and parsed `used_chunks`.
+Returns one stored report owned by the authenticated user, including parsed JSON
+content and parsed `used_chunks`.
 
 ### DELETE `/reports/{report_id}`
 

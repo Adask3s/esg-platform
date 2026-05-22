@@ -267,6 +267,7 @@ def generate_report_task(
         timeout=60.0,
     )
     raw_ai_response = response.choices[0].message.content
+    report_id = None
     try:
         report_json = json.loads(raw_ai_response)
     except json.JSONDecodeError as exc:
@@ -289,7 +290,7 @@ def generate_report_task(
         # TWARDY RYGOR: Zamieniamy listę chunków na ciąg tekstowy (JSON)
         used_chunks_str = json.dumps(found_chunks) if found_chunks else None
 
-        save_report(
+        report_id = save_report(
             user_id=user_id,
             input_text=f"Generowanie raportu: {target_tag}",
             response_text=raw_ai_response,
@@ -305,6 +306,7 @@ def generate_report_task(
         "kategoria": target_tag,
         "rag_used": True,
         "applied_filter": db_filter_tag,
+        "report_id": report_id,
         "used_chunks": found_chunks,
         "data": report_json,
     }
