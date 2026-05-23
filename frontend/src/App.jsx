@@ -8,30 +8,7 @@ import SignUp from "./pages/SignUp";
 import ContactUs from "./pages/ContactUs";
 import ResetPassword from "./pages/ResetPassword";
 import AdminPanel from "./pages/AdminPanel";
-
-function parseUserFromToken(token) {
-  if (!token) return null;
-
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) return { token, role: null };
-
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = atob(normalized);
-    const json = JSON.parse(
-      decodeURIComponent(
-        decoded
-          .split("")
-          .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
-          .join("")
-      )
-    );
-
-    return { token, role: json?.role || null };
-  } catch {
-    return { token, role: null };
-  }
-}
+import { parseUserFromToken } from "./lib/authToken";
 
 function App() {
   const navigate = useNavigate();

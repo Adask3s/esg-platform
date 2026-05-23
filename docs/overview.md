@@ -1,5 +1,9 @@
 # Project Overview
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `SYSTEM_OVERVIEW.md`
+
 ## Background
 
 Construction companies face growing requirements around ESG (Environmental, Social, Governance) reporting. The process is often complex, time-consuming, and requires analysis of large volumes of unstructured data from diverse sources. Traditional reporting methods are inefficient and prone to inaccuracies or omission of material information. Furthermore, interpreting complex ESG regulations and standards remains a challenge for many organizations.
@@ -32,7 +36,7 @@ Develop a platform that leverages Large Language Models (LLM) and Retrieval-Augm
 ### Report Generation
 - Automated creation of ESG reports aligned with recognized standards (GRI, SASB, TCFD)
 - Report personalization based on company and project specifics
-- Interactive editing and AI-assisted refinement of generated reports
+- Manual validation against the selected standard and PDF export of generated reports
 
 ## Scope
 
@@ -46,6 +50,7 @@ The initial scope covers:
 
 Out of scope for the initial release:
 - Real-time collaboration between multiple users on a single report
+- Full report draft editing workflow and persisted report versioning
 - Automated regulatory update ingestion
 - External data source connectors (ERP, IoT sensors)
 

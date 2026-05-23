@@ -1,5 +1,9 @@
 # Celery Validation Guide
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `DEVELOPER_GUIDE.md`, `DEPLOYMENT_GUIDE.md`
+
 ## Purpose
 
 This document describes how to prove that the asynchronous pipeline based on Celery and Redis works end-to-end.
@@ -54,10 +58,10 @@ Example terminal flow:
 ```text
 [KROK 1] Uruchamianie taska /report/generate dla scope 'Environmental'...
  SUKCES: Task raportu w kolejce: <task_id>
-↳ status=PROGRESS, progress=30, etap=Wyszukiwanie kontekstu
-↳ status=PROGRESS, progress=80, etap=Generowanie raportu przez AI
-↳ status=SUCCESS, progress=100, etap=Gotowe
- SUKCES: Task Celery zakończony poprawnie i zwrócił pełny raport ESG.
+<- status=PROGRESS, progress=30, etap=Wyszukiwanie kontekstu
+<- status=PROGRESS, progress=80, etap=Generowanie raportu przez AI
+<- status=SUCCESS, progress=100, etap=Gotowe
+ SUKCES: Task Celery zakonczony poprawnie i zwrocil pelny raport ESG.
 ```
 
 ## What to show as evidence

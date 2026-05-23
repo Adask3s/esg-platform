@@ -1,5 +1,9 @@
 # API Reference
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `API_REFERENCE_EXTENDED.md`
+
 FastAPI serves the backend API. User-scoped endpoints require a JWT bearer token
 in the `Authorization: Bearer <token>` header unless stated otherwise.
 
