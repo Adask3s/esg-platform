@@ -1,5 +1,9 @@
 # System Architecture
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `SYSTEM_OVERVIEW.md`, `ARCHITECTURE_DEEP_DIVE.md`
+
 ## Overview
 
 The platform is a React + FastAPI application for ESG document ingestion, RAG
@@ -114,6 +118,6 @@ compatibility with older, shorter payloads:
 - Secrets live in `.env` and must not be committed.
 - `JWT_SECRET` must be at least 32 characters.
 - User-scoped API routes should use JWT-derived user identity where possible.
-- Current report history read endpoints still accept `user_id` as a parameter;
-  this is documented as current behavior and should be tightened in a future
-  sprint.
+- Report history endpoints use JWT-derived user identity in the current code.
+- Current hardening backlog: add backend admin-role enforcement to embedding
+  reindex endpoints and add ownership verification to chat history retrieval.

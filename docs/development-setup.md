@@ -1,5 +1,9 @@
 # Development Setup
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `DEVELOPER_GUIDE.md`, `DEPLOYMENT_GUIDE.md`
+
 The local reference environment is Windows + PowerShell. The backend can also be
 run from other shells if paths are adjusted.
 

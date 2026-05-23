@@ -1,5 +1,9 @@
 # Data Processing Pipeline
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `ARCHITECTURE_DEEP_DIVE.md`, `SYSTEM_OVERVIEW.md`
+
 This document describes the current path from user upload to ESG report PDF.
 
 ## Overview
