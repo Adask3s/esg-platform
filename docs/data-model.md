@@ -1,5 +1,9 @@
 # Data Model
 
+Status: internal technical documentation  
+Last updated: 2026-05-23  
+Extended reference: `ARCHITECTURE_DEEP_DIVE.md`
+
 This document reflects the active schema used by the current code. Older
 materials may refer to legacy table names; the active application uses the
 tables below.

@@ -2,30 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../App.css";
 import MultiFileUpload from "../components/MultiFileUpload";
+import { REPORT_SCOPES, REPORT_STANDARDS, scopeFromTag } from "../lib/reportUtils";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-const REPORT_SCOPES = [
-  { value: "ESG", label: "Full ESG" },
-  { value: "Environmental", label: "Environmental" },
-  { value: "Social", label: "Social" },
-  { value: "Governance", label: "Governance" },
-];
-
-const REPORT_STANDARDS = [
-  { value: "GRI", label: "GRI" },
-  { value: "SASB", label: "SASB" },
-  { value: "TCFD", label: "TCFD" },
-];
-
-function scopeFromTag(tag, fallback = "ESG") {
-  const normalized = String(tag || "").trim().toLowerCase();
-  if (normalized.startsWith("env") || normalized === "e") return "Environmental";
-  if (normalized.startsWith("soc") || normalized === "s") return "Social";
-  if (normalized.startsWith("gov") || normalized === "g") return "Governance";
-  if (normalized === "esg") return "ESG";
-  return fallback;
-}
 
 export default function Dashboard({ user, onLogout }) {
   const [userDocuments, setUserDocuments] = useState([]);

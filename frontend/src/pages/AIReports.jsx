@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "../App.css";
+import {
+  VALIDATION_STANDARDS,
+  filenameFromDisposition,
+  formatIndicator,
+  mapTagToApi,
+} from "../lib/reportUtils";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const REPORT_YEAR = new Date().getFullYear();
@@ -13,28 +19,6 @@ const CHAPTERS = [
 ];
 
 const LOADING_STATES = new Set(["QUEUED", "PENDING", "STARTED", "PROGRESS", "RETRY"]);
-const VALIDATION_STANDARDS = [
-  { value: "GRI", label: "GRI" },
-  { value: "SASB", label: "SASB" },
-  { value: "TCFD", label: "TCFD" },
-];
-
-function mapTagToApi(tag) {
-  if (!tag) return "ESG";
-  const normalized = String(tag).trim().toLowerCase();
-  if (normalized.startsWith("env")) return "Environmental";
-  if (normalized.startsWith("soc")) return "Social";
-  if (normalized.startsWith("gov")) return "Governance";
-  return "ESG";
-}
-
-function formatIndicator(indicator) {
-  if (!indicator) return "Metric extraction in progress.";
-  const name = indicator.nazwa || "Indicator";
-  const value = indicator.wartosc ?? "-";
-  const unit = indicator.jednostka ? ` ${indicator.jednostka}` : "";
-  return `${name}: ${value}${unit}`;
-}
 
 function ReportList({ items, emptyText }) {
   const cleaned = Array.isArray(items) ? items.filter(Boolean) : [];
@@ -150,14 +134,6 @@ function ValidationPanel({
       )}
     </div>
   );
-}
-
-function filenameFromDisposition(disposition) {
-  if (!disposition) return "raport_ESG.pdf";
-  const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utfMatch?.[1]) return decodeURIComponent(utfMatch[1]);
-  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-  return asciiMatch?.[1] || "raport_ESG.pdf";
 }
 
 export default function AIReports() {
