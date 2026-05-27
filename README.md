@@ -101,7 +101,7 @@ Make sure the following tools are installed before proceeding:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-org>/esg-platform.git
+git clone https://github.com/Adask3s/esg-platform.git
 cd esg-platform
 ```
 
