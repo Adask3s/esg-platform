@@ -359,12 +359,12 @@ This project was developed as a collaborative effort by:
 
 **pogmaciek321**
 
-- GitHub: [gisztorowiczz](https://github.com/pogmaciek321)
+- GitHub: [pogmaciek321](https://github.com/pogmaciek321)
 
 ---
 
 **dambeeto**
 
-- GitHub: [gisztorowiczz](https://github.com/dambeeto)
+- GitHub: [dambeeto](https://github.com/dambeeto)
 
 ---
