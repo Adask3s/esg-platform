@@ -5,6 +5,7 @@ import pytest
 
 import backend.auth as auth_mod
 import backend.main as main
+from backend import rate_limiting
 
 
 @pytest.fixture
@@ -13,9 +14,12 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def clear_dependency_overrides():
+def clear_dependency_overrides(monkeypatch):
     main.app.dependency_overrides.clear()
+    monkeypatch.setattr(rate_limiting, "_get_redis_client", lambda: None)
+    rate_limiting.reset_rate_limit_state()
     yield
+    rate_limiting.reset_rate_limit_state()
     main.app.dependency_overrides.clear()
 
 

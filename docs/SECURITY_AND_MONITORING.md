@@ -2,7 +2,7 @@
 
 Status: internal technical documentation  
 Project: `JKPSZ3-platforma-etg`  
-Last updated: 2026-05-23  
+Last updated: 2026-05-24  
 Primary audience: security reviewers, DevOps, SRE, backend owners
 
 ## 1. Purpose
@@ -49,6 +49,12 @@ Authentication is implemented in `backend/auth.py`.
 | Signup | Disabled unless `SIGNUP_ENABLED=true` |
 | JWT secret | Required, minimum 32 characters |
 
+Rate limiting is implemented in `backend/rate_limiting.py` with a fixed-window
+counter. Redis is preferred through `RATE_LIMIT_REDIS_URL` or `REDIS_URL`; if
+Redis is unavailable the API falls back to in-process memory. Endpoint-specific
+limits protect login, signup, contact, uploads/ingest, report generation, chat
+and task-status polling. Exceeded limits return `429` with `Retry-After`.
+
 Example:
 
 ```http
@@ -75,6 +81,7 @@ Current backend authorization:
 |---|---|
 | User documents | JWT required; upload/delete use token-derived user id |
 | Document delete | Explicit owner check in `delete_user_document_cascade` |
+| Document finalization | Deletes all owned source docs/chunks and clears owned report evidence |
 | Reports list/get/delete | Token-derived `user_id` passed to repository query |
 | Report validation | Stored report fetched by `report_id` and `user_id` |
 | Task status/download | Redis owner metadata checked when available |
@@ -122,6 +129,8 @@ Current controls:
 - Disk validation via `validate_file_on_disk` in selected endpoints.
 - Duplicate hash checks for user documents and knowledge-base documents.
 - Temporary files are cleaned by Celery task `finally` blocks.
+- User-triggered finalization deletes source documents and chunks and clears
+  `reports.used_chunks`; generated report JSON remains until report deletion.
 
 Supported parser families:
 
@@ -206,6 +215,7 @@ Minimum metrics:
 | API 5xx rate | API logs/APM | sustained increase |
 | API latency | API/APM | p95 above SLA |
 | Auth failures | API logs | spike or brute-force pattern |
+| Rate-limit 429 count | API logs/APM | spike by endpoint or IP/user |
 | Celery queue depth | Redis/Celery | backlog above threshold |
 | Task failure rate | Celery/Flower | failure ratio above baseline |
 | Task retry rate | Celery logs | repeated transient failures |
@@ -340,6 +350,7 @@ Recommended additions:
 | High | Chat history owner verification | Session id guessing could expose history | Verify session belongs to current user before reading messages |
 | High | Embedding endpoint role enforcement | Authenticated non-admin could enqueue expensive jobs | Add `role == "admin"` checks |
 | Medium | Header-based source split | Misnamed sources can be routed incorrectly | Extend RPC to return structured source type |
+| Medium | In-memory rate-limit fallback | Counters are per-process and reset on restart | Use Redis in shared production environments |
 | Medium | Local `logs.log` | Non-durable and overwritten | Centralized structured logging |
 | Medium | Task result TTL | PDF export by task unavailable after expiry | Add PDF export by stored report id |
 | Medium | Service-role Supabase usage | RLS bypass makes code checks critical | Centralize authorization wrappers |
@@ -356,4 +367,3 @@ A production-impacting change is security-ready when:
 - LLM output is parsed/normalized before use,
 - docs and runbooks are updated,
 - monitoring signals exist for the new flow.
-

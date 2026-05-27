@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "../App.css";
+import { apiErrorMessage } from "../lib/apiErrors";
 import {
   VALIDATION_STANDARDS,
   filenameFromDisposition,
@@ -212,7 +213,7 @@ export default function AIReports() {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.detail || "Failed to load saved report.");
+        throw new Error(apiErrorMessage(response.status, data, "Failed to load saved report."));
       }
 
       let parsedReport = data?.content ?? data?.response_text ?? null;
@@ -276,7 +277,7 @@ export default function AIReports() {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.detail || "Failed to start report generation.");
+        throw new Error(apiErrorMessage(response.status, data, "Failed to start report generation."));
       }
 
       setTaskId(data.task_id);
@@ -320,7 +321,7 @@ export default function AIReports() {
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data?.detail || "Cannot read task status.");
+          throw new Error(apiErrorMessage(response.status, data, "Cannot read task status."));
         }
 
         if (isCancelled) return;
@@ -421,7 +422,7 @@ export default function AIReports() {
 
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        throw new Error(payload?.detail || `PDF download failed (${response.status}).`);
+        throw new Error(apiErrorMessage(response.status, payload, `PDF download failed (${response.status}).`));
       }
 
       const blob = await response.blob();
@@ -478,7 +479,7 @@ export default function AIReports() {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.detail || "Report validation failed.");
+        throw new Error(apiErrorMessage(response.status, data, "Report validation failed."));
       }
 
       setValidationResult(data);

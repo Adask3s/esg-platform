@@ -1,7 +1,7 @@
 # Data Model
 
 Status: internal technical documentation  
-Last updated: 2026-05-23  
+Last updated: 2026-05-24  
 Extended reference: `ARCHITECTURE_DEEP_DIVE.md`
 
 This document reflects the active schema used by the current code. Older
@@ -37,6 +37,9 @@ Metadata for user-uploaded documents.
 | `status` | text | Processing state |
 | `created_at` | timestamp | Upload time |
 
+User-triggered finalization deletes rows owned by the user from this table after
+the final report version is imported/exported.
+
 ### `user_document_chunks`
 
 Vectorized chunks from user documents.
@@ -52,6 +55,8 @@ Vectorized chunks from user documents.
 | `metadata` | json/jsonb | Source details when available |
 | `tag` | text | ESG filter tag when available |
 | `created_at` | timestamp | Creation time |
+
+User-triggered finalization deletes chunks for finalized user documents.
 
 ### `knowledge_documents`
 
@@ -93,7 +98,7 @@ Stored report history.
 | `input_text` | text | Generation request summary |
 | `response_text` | text | Raw JSON string returned by the LLM |
 | `report_type` | text | `ESG`, `Environmental`, `Social` or `Governance` |
-| `used_chunks` | text | JSON-encoded list of RAG chunks |
+| `used_chunks` | text | JSON-encoded list of RAG chunks; cleared by document finalization |
 | `created_at` | timestamp | Creation time |
 
 ### `chat_sessions`

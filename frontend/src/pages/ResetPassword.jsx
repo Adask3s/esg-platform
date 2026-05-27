@@ -58,6 +58,7 @@ export default function ResetPassword() {
           <a href="/">Home</a>
           <a href="/login">Login</a>
           <a href="/signup">Sign up</a>
+          <a href="/privacy">Privacy</a>
         </nav>
       </header>
 
@@ -144,13 +145,13 @@ export default function ResetPassword() {
               </form>
 
               <div className="auth-footer">
-                <p><a href="/contact">Contact support</a> | <a href="/login">Back to login</a></p>
+                <p><a href="/contact">Contact support</a> | <a href="/login">Back to login</a> | <a href="/privacy">Privacy</a></p>
               </div>
             </>
           )}
 
           <div className="auth-footer">
-            <p>Don't have an account? <a href="/signup">Sign up</a></p>
+            <p>Don't have an account? <a href="/signup">Sign up</a> | <a href="/privacy">Privacy</a></p>
           </div>
         </div>
       </main>

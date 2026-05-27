@@ -2,7 +2,7 @@
 
 Status: internal technical documentation  
 Project: `JKPSZ3-platforma-etg`  
-Last updated: 2026-05-23  
+Last updated: 2026-05-24  
 Primary audience: DevOps, platform engineers, release owners
 
 ## 1. Purpose
@@ -108,6 +108,10 @@ DB_USER=<user>
 DB_PASSWORD=<password>
 DB_PORT=5432
 REDIS_URL=redis://localhost:6379/0
+RATE_LIMITS_ENABLED=true
+RATE_LIMIT_REDIS_URL=redis://localhost:6379/0
+RATE_LIMIT_TRUST_PROXY_HEADERS=false
+RATE_LIMIT_GLOBAL_PER_MINUTE=300
 CELERY_RESULT_BACKEND=redis://localhost:6379/0
 CELERY_TIMEZONE=Europe/Warsaw
 JWT_SECRET=<min-32-chars>
@@ -118,6 +122,10 @@ ALLOWED_ORIGINS=https://<frontend-domain>
 UPLOAD_TMP_ROOT=<shared-upload-path>
 WORKER_TMP_ROOT=<worker-mounted-upload-path>
 ```
+
+Rate limits should use Redis in production so counters are shared across API
+instances. Set `RATE_LIMIT_TRUST_PROXY_HEADERS=true` only when the API is behind
+a trusted proxy that overwrites `X-Forwarded-For`/`X-Real-IP`.
 
 ### 5.2 Frontend
 
@@ -386,4 +394,3 @@ before rolling back incompatible task signatures.
 | Embedding endpoints do not enforce admin in backend | Non-admin authenticated user could enqueue costly jobs | Add role check |
 | Chat history lacks owner check | Cross-session read risk if ID is known | Add owner verification |
 | `logs.log` file overwrite behavior | Poor audit durability | Use structured centralized logging |
-

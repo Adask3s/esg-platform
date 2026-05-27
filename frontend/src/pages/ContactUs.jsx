@@ -1,5 +1,6 @@
 import { useState } from "react";
 import "../styles/Auth.css";
+import { apiErrorMessage } from "../lib/apiErrors";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -26,7 +27,7 @@ export default function ContactUs() {
 
       if (!response.ok) {
         const data = await response.json();
-        setError(data?.detail || "Failed to send message");
+        setError(apiErrorMessage(response.status, data, "Failed to send message"));
         return;
       }
 
@@ -50,6 +51,7 @@ export default function ContactUs() {
           <a href="/">Home</a>
           <a href="/login">Login</a>
           <a href="/signup">Sign up</a>
+          <a href="/privacy">Privacy</a>
         </nav>
       </header>
 
@@ -93,7 +95,7 @@ export default function ContactUs() {
           </form>
 
           <div className="auth-footer">
-            <p>Or <a href="/">go back home</a></p>
+            <p>Or <a href="/">go back home</a> | <a href="/privacy">Privacy</a></p>
           </div>
         </div>
       </main>

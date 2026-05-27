@@ -1,5 +1,6 @@
 import { useState } from "react";
 import "../styles/Auth.css";
+import { apiErrorMessage } from "../lib/apiErrors";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -32,7 +33,7 @@ export default function SignUp({ onLogin }) {
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data?.detail || "Signup failed");
+        setError(apiErrorMessage(response.status, data, "Signup failed"));
         return;
       }
 
@@ -54,6 +55,7 @@ export default function SignUp({ onLogin }) {
           <a href="/">Home</a>
           <a href="/login">Login</a>
           <a href="/contact">Contact us</a>
+          <a href="/privacy">Privacy</a>
         </nav>
       </header>
 
@@ -119,7 +121,7 @@ export default function SignUp({ onLogin }) {
           </form>
 
           <div className="auth-footer">
-            <p><a href="/contact">Need help?</a></p>
+            <p><a href="/contact">Need help?</a> | <a href="/privacy">Privacy</a></p>
           </div>
         </div>
       </main>
