@@ -5,9 +5,10 @@ from pathlib import Path
 import tempfile
 import shutil
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response, APIRouter
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Depends, Response, APIRouter, Request
 from typing import Any, List, Optional, Literal
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import database.report_repo as report_repo
 from database.report_repo import save_report
 from database.knowledge_service import add_document_to_knowledge_base, check_knowledge_document_hash
@@ -19,12 +20,13 @@ from .report_validation import (
     normalize_validation_standard,
     validate_report_content,
 )
+from .rate_limiting import client_identifier, enforce_rate_limit
 from pydantic import BaseModel, Field
 import logging
 import json
 
 # Kaskadowe usuwanie dokumentów użytkownika (dokument + powiązane chunki/wektory)
-from database.user_documents_deleting import delete_user_document_cascade
+from database.user_documents_deleting import delete_all_user_documents_cascade, delete_user_document_cascade
 
 # Celery imports (support both package and script-run modes)
 try:
@@ -156,6 +158,26 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+
+@app.middleware("http")
+async def global_rate_limit_middleware(request: Request, call_next):
+    if request.method != "OPTIONS" and request.url.path not in {"/docs", "/redoc", "/openapi.json"}:
+        try:
+            enforce_rate_limit(
+                request=request,
+                scope="global_api",
+                identity=client_identifier(request),
+                limit=int(os.getenv("RATE_LIMIT_GLOBAL_PER_MINUTE", "300")),
+                window_seconds=60,
+            )
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
+    return await call_next(request)
+
 # Podłączenie routera embeddingów (ZADANIE 2 - uporządkowany kod)
 app.include_router(embeddings_router)
 # Podłączenie routera dokumentów (nowe endpointy listujące)
@@ -217,8 +239,30 @@ def ping():
 MAX_FILES = 10
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
+
+def _rate_user_identity(user: dict[str, Any]) -> str:
+    return f"user:{user.get('id', 'unknown')}"
+
+
+def _enforce_upload_ingest_limits(request: Request, user: dict[str, Any], scope: str) -> None:
+    enforce_rate_limit(
+        request=request,
+        scope=f"{scope}_ip",
+        identity=client_identifier(request),
+        limit=int(os.getenv("RATE_LIMIT_UPLOAD_IP_PER_MINUTE", "10")),
+        window_seconds=60,
+    )
+    enforce_rate_limit(
+        request=request,
+        scope=f"{scope}_user",
+        identity=_rate_user_identity(user),
+        limit=int(os.getenv("RATE_LIMIT_UPLOAD_USER_PER_HOUR", "20")),
+        window_seconds=3600,
+    )
+
 @app.post("/parse")
 async def parse_upload(
+    request: Request,
     files: List[UploadFile] | None = File(None),
     file: UploadFile | None = File(None),
     user = Depends(get_current_user),
@@ -238,6 +282,9 @@ async def parse_upload(
 
     if len(incoming) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"Too many files. Max allowed: {MAX_FILES}")
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "parse_upload")
 
     tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -322,6 +369,7 @@ def _assert_url_not_ssrf(url: str) -> None:
 
 @app.post("/ingest/chunk/url")
 async def ingest_chunk_url(
+    request: Request,
     body: IngestUrlRequest = Body(...),
     user = Depends(get_current_user),
 ):
@@ -329,6 +377,9 @@ async def ingest_chunk_url(
     Asynchronicznie: pobiera stronę WWW, filtruje wg słów kluczowych i chunkuje.
     Zwraca task_id; pełny wynik (IngestResponse) pobierasz przez GET /status/{task_id}.
     """
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "ingest_url")
     _assert_url_not_ssrf(body.url)
     async_result = ingest_chunk_url_task.delay(
         body.url,
@@ -348,6 +399,7 @@ async def ingest_chunk_url(
 
 @app.post("/ingest/chunk/file")
 async def ingest_chunk_file(
+    request: Request,
     file: UploadFile = File(...),
     keywords: str | None = Form(None, description="Słowa kluczowe rozdzielone przecinkami"),
     case_sensitive: bool = Form(False),
@@ -364,6 +416,9 @@ async def ingest_chunk_file(
     Asynchronicznie: parsuje plik, filtruje wg słów kluczowych, chunkuje.
     Zwraca task_id; wynik IngestResponse pobierasz przez GET /status/{task_id}.
     """
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "ingest_file")
     tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
     tmp_root.mkdir(parents=True, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="ingest_", dir=str(tmp_root))
@@ -458,9 +513,13 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/process")
 async def process_file(
+    request: Request,
     file: UploadFile = File(...),
     user = Depends(get_current_user)
 ):
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "process_upload")
     tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
     tmp_root.mkdir(parents=True, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="task_", dir=str(tmp_root))
@@ -481,6 +540,7 @@ async def process_file(
 @app.get("/status/{task_id}")
 def get_status(
     task_id: str,
+    request: Request,
     user = Depends(get_current_user),
 ):
     """Zwraca rozbudowany status zadania Celery.
@@ -500,6 +560,16 @@ def get_status(
     }
     """
     from datetime import datetime, timezone
+
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    enforce_rate_limit(
+        request=request,
+        scope="status_poll",
+        identity=f"{_rate_user_identity(user)}:{client_identifier(request)}",
+        limit=int(os.getenv("RATE_LIMIT_STATUS_PER_MINUTE", "120")),
+        window_seconds=60,
+    )
 
     # Opcjonalny ownership check
     if not _check_task_owner(task_id, str(user["id"])):
@@ -575,7 +645,7 @@ class ReportGenerateRequest(BaseModel):
     standard: Optional[Literal["GRI", "SASB", "TCFD"]] = Field("GRI", description="Standard raportowania. Domyslnie GRI.")
 
 @app.post("/report/generate")
-async def generate_report(request: ReportGenerateRequest, user=Depends(get_current_user)):
+async def generate_report(request: ReportGenerateRequest, http_request: Request, user=Depends(get_current_user)):
     """
     Asynchroniczne generowanie raportu ESG przez Celery.
     Zwraca task_id; pełny raport JSON pobierasz przez GET /status/{task_id} (pole "result").
@@ -585,6 +655,13 @@ async def generate_report(request: ReportGenerateRequest, user=Depends(get_curre
         raise HTTPException(status_code=401, detail="Brak autoryzacji. Musisz być zalogowany.")
 
     user_id = str(user['id'])
+    enforce_rate_limit(
+        request=http_request,
+        scope="report_generate",
+        identity=_rate_user_identity(user),
+        limit=int(os.getenv("RATE_LIMIT_REPORT_GENERATE_PER_HOUR", "10")),
+        window_seconds=3600,
+    )
     async_result = generate_report_task.delay(user_id, request.report_scope, request.standard or "GRI")
     _register_task_owner(async_result.id, user_id)
 
@@ -729,6 +806,7 @@ async def validate_report_get_endpoint(
 
 @app.post("/knowledge/upload")
 async def upload_knowledge_files(
+    request: Request,
     files: List[UploadFile] = File(...),
     tag: str = Form("general"),
     document_type: str = Form("general"),
@@ -742,6 +820,9 @@ async def upload_knowledge_files(
     """
     if not user or user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only admins can upload knowledge documents")
+    if "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "knowledge_upload")
 
     if not files:
         raise HTTPException(status_code=400, detail="Brak przesłanych plików.")
@@ -801,6 +882,7 @@ async def upload_knowledge_files(
 
 @app.post("/knowledge/parse-and-store")
 async def parse_and_store_knowledge(
+    request: Request,
     file: UploadFile = File(...),
     tag: str = Form("general"),
     document_type: str = Form("general"),
@@ -810,6 +892,9 @@ async def parse_and_store_knowledge(
     # tylko admin
     if not user or user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only admins can parse and store knowledge docums")
+    if "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_upload_ingest_limits(request, user, "knowledge_parse")
     """
     INTEGRACJA PARSERÓW Z BAZĄ WIEDZY (ZADANIE 1).
 
@@ -891,6 +976,7 @@ except ImportError:
 
 @app.post("/user/documents/upload")
 async def upload_user_document(
+    request: Request,
     file: UploadFile = File(...),
     tag: str = Form("project_x"),
     user=Depends(get_current_user),
@@ -903,6 +989,7 @@ async def upload_user_document(
         raise HTTPException(status_code=401, detail="User ID not found")
 
     user_id = str(user['id'])
+    _enforce_upload_ingest_limits(request, user, "user_document_upload")
 
     tmp_root = Path(os.getenv("UPLOAD_TMP_ROOT", Path(__file__).resolve().parents[1] / "tmp_uploads"))
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -942,6 +1029,10 @@ class DeleteUserDocumentRequest(BaseModel):
     document_id: str
 
 
+class FinalizeUserDocumentsRequest(BaseModel):
+    confirm_delete: bool = Field(False, description="Must be true to delete source documents and report evidence.")
+
+
 @app.post("/user/documents/delete")
 def delete_user_document_endpoint(
     body: DeleteUserDocumentRequest,
@@ -956,6 +1047,35 @@ def delete_user_document_endpoint(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     return delete_user_document_cascade(user_id=str(user["id"]), document_id=str(body.document_id))
+
+
+@app.post("/user/documents/finalize")
+def finalize_user_documents_endpoint(
+    body: FinalizeUserDocumentsRequest,
+    user=Depends(get_current_user),
+):
+    """Usuwa wszystkie dokumenty zrodlowe usera, chunki i dowody z raportow."""
+    if not user or "id" not in user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if body.confirm_delete is not True:
+        raise HTTPException(status_code=400, detail="confirm_delete must be true")
+
+    user_id = str(user["id"])
+    try:
+        deleted = delete_all_user_documents_cascade(user_id=user_id)
+        cleared_report_evidence = report_repo.clear_report_evidence_for_user(user_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Finalization failed: {exc}") from exc
+
+    return {
+        "status": "success",
+        "deleted_documents": deleted.get("deleted_documents", 0),
+        "deleted_chunks": deleted.get("deleted_chunks", 0),
+        "cleared_report_evidence": cleared_report_evidence,
+        "document_ids": deleted.get("document_ids", []),
+    }
 
 
 # =============== TEST EMBEDDINGU ==============
@@ -1029,7 +1149,7 @@ def get_session_history(session_id: str, limit: int = 50, offset: int = 0, user 
 
 
 @app.post("/chat/ask")
-async def ask_chat(request: ChatRequest, user = Depends(get_current_user)):
+async def ask_chat(chat_request: ChatRequest, http_request: Request, user = Depends(get_current_user)):
     """
     Endpoint czatu (Celery Odtworzony RAG). Zwraca task_id.
     Służy wyłącznie do odpowiadania na pytania użytkownika na podstawie bazy wektorowej.
@@ -1038,18 +1158,25 @@ async def ask_chat(request: ChatRequest, user = Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="Brak autoryzacji.")
 
     user_id = str(user['id'])
+    enforce_rate_limit(
+        request=http_request,
+        scope="chat_ask",
+        identity=_rate_user_identity(user),
+        limit=int(os.getenv("RATE_LIMIT_CHAT_ASK_PER_HOUR", "30")),
+        window_seconds=3600,
+    )
 
-    if not request.query or not request.query.strip():
+    if not chat_request.query or not chat_request.query.strip():
         raise HTTPException(
             status_code=400,
             detail="Pytanie nie może być puste."
         )
 
-    final_query = request.query.strip()
-    search_tag = request.tag if request.tag else None
+    final_query = chat_request.query.strip()
+    search_tag = chat_request.tag if chat_request.tag else None
     
     # 1. Obsługa sesji
-    session_id = request.session_id
+    session_id = chat_request.session_id
     if not session_id:
         title = final_query[:50] + ("..." if len(final_query) > 50 else "")
         session_id = create_chat_session(user_id=user_id, title=title)

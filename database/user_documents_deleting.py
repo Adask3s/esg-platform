@@ -66,3 +66,41 @@ def delete_user_document_cascade(*, user_id: str, document_id: str) -> Dict[str,
         "deleted_chunks": deleted_chunks,
     }
 
+
+def delete_all_user_documents_cascade(*, user_id: str) -> Dict[str, Any]:
+    """Usuwa wszystkie dokumenty uzytkownika i powiazane chunki z Supabase."""
+
+    supabase = get_supabase()
+
+    docs_res = (
+        supabase.table("user_documents")
+        .select("id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    document_ids = [str(row["id"]) for row in docs_res.data or [] if row.get("id")]
+
+    deleted_chunks = 0
+    if document_ids:
+        chunks_del_res = (
+            supabase.table("user_document_chunks")
+            .delete()
+            .in_("document_id", document_ids)
+            .execute()
+        )
+        deleted_chunks = len(chunks_del_res.data or [])
+
+    docs_del_res = (
+        supabase.table("user_documents")
+        .delete()
+        .eq("user_id", user_id)
+        .execute()
+    )
+    deleted_docs = len(docs_del_res.data or [])
+
+    return {
+        "document_ids": document_ids,
+        "deleted_documents": deleted_docs,
+        "deleted_chunks": deleted_chunks,
+    }
+

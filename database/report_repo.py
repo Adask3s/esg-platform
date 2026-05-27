@@ -54,6 +54,30 @@ def get_report_by_id(report_id, user_id):
     return None
 
 # =========== FUNKCJA DO USUWANIA WYGENEROWANEGO RAPORTU UŻYTKOWNIKA ===============
+def clear_report_evidence_for_user(user_id: str) -> int:
+    """Czysci zapisane fragmenty zrodlowe (`used_chunks`) w raportach uzytkownika."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE reports
+            SET used_chunks = NULL
+            WHERE user_id = %s AND used_chunks IS NOT NULL;
+            """,
+            (user_id,),
+        )
+        cleared_count = cur.rowcount
+        conn.commit()
+        return cleared_count
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        cur.close()
+        conn.close()
+
+
 def delete_report(report_id: str, user_id: str) -> bool:
     """Usuwa raport z bazy. Zwraca True jeśli usunięto, False jeśli raport nie istniał."""
     conn = get_connection()

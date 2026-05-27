@@ -186,6 +186,63 @@
   text-decoration: underline;
 }
 
+.privacy-page {
+  background: #f6f1e7;
+}
+
+.privacy-content {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: 48px 28px 72px;
+}
+
+.privacy-hero {
+  margin-bottom: 28px;
+}
+
+.privacy-hero h1 {
+  margin: 0 0 10px;
+  color: #1f2041;
+  font-size: 34px;
+  line-height: 1.15;
+}
+
+.privacy-hero p {
+  max-width: 720px;
+  margin: 0;
+  color: #4d4a45;
+  line-height: 1.6;
+}
+
+.privacy-sections {
+  display: grid;
+  gap: 14px;
+}
+
+.privacy-section {
+  border: 1px solid rgba(31, 32, 65, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 20px;
+  text-align: left;
+}
+
+.privacy-section h2 {
+  margin: 0 0 10px;
+  color: #1f2041;
+  font-size: 18px;
+}
+
+.privacy-section p {
+  margin: 0 0 10px;
+  color: #3f3b36;
+  line-height: 1.58;
+}
+
+.privacy-section p:last-child {
+  margin-bottom: 0;
+}
+
 @media (max-width: 600px) {
   .auth-form-wrapper {
     padding: 24px;

@@ -2,7 +2,7 @@
 
 Status: internal technical documentation  
 Project: `JKPSZ3-platforma-etg`  
-Last updated: 2026-05-23  
+Last updated: 2026-05-24  
 Primary audience: frontend developers, backend developers, QA, integrators
 
 ## 1. Overview
@@ -27,6 +27,10 @@ usually return:
   "detail": "Human-readable error message"
 }
 ```
+
+Rate limit errors return `429` with a generic detail and `Retry-After` header.
+Redis is used through `RATE_LIMIT_REDIS_URL` or `REDIS_URL`; if Redis is
+unavailable, the backend uses an in-process fixed-window fallback.
 
 Normalized task status:
 
@@ -271,6 +275,7 @@ Errors:
 | 401 | Missing user id |
 | 409 | Duplicate file hash for same user |
 | 413 | File too large |
+| 429 | Upload/ingest rate limit exceeded |
 | 500 | Unexpected upload or queue error |
 
 ### 6.2 POST `/user/documents/delete`
@@ -303,7 +308,41 @@ Errors:
 | 403 | Document exists but belongs to another user |
 | 404 | Document not found |
 
-### 6.3 GET `/documents/mine`
+### 6.3 POST `/user/documents/finalize`
+
+Deletes all source documents and related chunks for the authenticated user and
+clears report evidence excerpts by setting `reports.used_chunks` to `NULL`.
+Generated report JSON remains stored.
+
+Request:
+
+```json
+{
+  "confirm_delete": true
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "deleted_documents": 2,
+  "deleted_chunks": 12,
+  "cleared_report_evidence": 3,
+  "document_ids": ["uuid-1", "uuid-2"]
+}
+```
+
+Errors:
+
+| Status | Reason |
+|---:|---|
+| 400 | `confirm_delete` is missing or false |
+| 401 | Missing token/user |
+| 500 | Database finalization error |
+
+### 6.4 GET `/documents/mine`
 
 Lists documents uploaded by the authenticated user.
 
@@ -331,7 +370,7 @@ Response:
 ]
 ```
 
-### 6.4 GET `/documents/knowledge`
+### 6.5 GET `/documents/knowledge`
 
 Admin-only knowledge-base document list.
 
@@ -343,7 +382,7 @@ Errors:
 |---:|---|
 | 403 | User is not admin |
 
-### 6.5 GET `/documents/`
+### 6.6 GET `/documents/`
 
 Combined document list. Returns user documents for all users; includes knowledge
 documents only for admin users.
@@ -842,10 +881,11 @@ Response:
 | `Login.jsx` | `/auth/login` |
 | `SignUp.jsx` | `/auth/signup` |
 | `ContactUs.jsx` | `/auth/contact` |
-| `Dashboard.jsx` | `/documents/mine`, `/reports/user`, `/user/documents/delete`, `/reports/{id}` |
+| `Dashboard.jsx` | `/documents/mine`, `/reports/user`, `/user/documents/delete`, `/user/documents/finalize`, `/reports/{id}` |
 | `MultiFileUpload.jsx` | `/user/documents/upload`, `/status/{task_id}` |
 | `AIReports.jsx` | `/report/generate`, `/status/{task_id}`, `/reports/{id}`, `/report/{id}/validate`, `/report/download/{task_id}` |
 | `AdminPanel.jsx` | `/documents/knowledge`, `/documents`, `/embeddings/status`, `/knowledge/upload`, `/embeddings/generate-all`, `/embeddings/generate-for-document` |
+| `PrivacyPolicy.jsx` | Static `/privacy` route |
 
 ## 13. Deployment Notes for API Consumers
 
@@ -868,4 +908,3 @@ Response:
 | `/report/*` | generation time, `partial_success`, validation score distribution |
 | `/chat/*` | empty-query errors, RAG hit rate, response latency |
 | `/ingest/*` | SSRF rejections, fetch failures |
-

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiErrorMessage } from "../lib/apiErrors";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const MAX_FILES = 10;
@@ -216,14 +217,14 @@ export default function MultiFileUpload({ token, onFileCompleted, onAllCompleted
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const message =
-          data?.detail ||
-          (res.status === 409
+        const fallback =
+          res.status === 409
             ? "Ten dokument już istnieje"
-            : `Błąd uploadu (${res.status})`);
+            : `Błąd uploadu (${res.status})`;
+        const message = apiErrorMessage(res.status, data, fallback);
         patchItem(id, {
           phase: "failed",
-          error: { message, retryable: res.status >= 500 },
+          error: { message, retryable: res.status === 429 || res.status >= 500 },
         });
         return;
       }
@@ -266,7 +267,7 @@ export default function MultiFileUpload({ token, onFileCompleted, onAllCompleted
             patchItem(id, {
               phase: "failed",
               error: {
-                message: data?.detail || `Status check failed (${res.status})`,
+                message: apiErrorMessage(res.status, data, `Status check failed (${res.status})`),
                 retryable: true,
               },
             });

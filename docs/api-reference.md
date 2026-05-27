@@ -1,11 +1,20 @@
 # API Reference
 
 Status: internal technical documentation  
-Last updated: 2026-05-23  
+Last updated: 2026-05-24  
 Extended reference: `API_REFERENCE_EXTENDED.md`
 
 FastAPI serves the backend API. User-scoped endpoints require a JWT bearer token
 in the `Authorization: Bearer <token>` header unless stated otherwise.
+
+## Rate Limits
+
+The API applies fixed-window rate limits. Redis is used when available through
+`RATE_LIMIT_REDIS_URL` or `REDIS_URL`; the backend falls back to process memory
+if Redis is unavailable. Exceeded limits return `429` with `Retry-After`.
+
+Default protected scopes include global per-IP API traffic, login, signup,
+contact, upload/ingest, report generation, chat and task status polling.
 
 ## Authentication
 
@@ -109,6 +118,32 @@ Request body:
 ```json
 {
   "document_id": "uuid"
+}
+```
+
+### POST `/user/documents/finalize`
+
+Deletes all source documents and chunks for the authenticated user and clears
+stored report evidence excerpts from `reports.used_chunks`. Generated report JSON
+stays in report history until the user deletes the report.
+
+Request body:
+
+```json
+{
+  "confirm_delete": true
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "deleted_documents": 2,
+  "deleted_chunks": 12,
+  "cleared_report_evidence": 3,
+  "document_ids": ["uuid-1", "uuid-2"]
 }
 ```
 
@@ -364,4 +399,4 @@ FastAPI validation and error responses use the standard shape:
 }
 ```
 
-Common statuses: `400`, `401`, `403`, `404`, `409`, `413`, `422`, `500`.
+Common statuses: `400`, `401`, `403`, `404`, `409`, `413`, `422`, `429`, `500`.

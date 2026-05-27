@@ -528,6 +528,20 @@ html {
   transform: none;
 }
 
+.history-finalize-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.history-success-message {
+  margin: -6px 0 12px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1f7a3f;
+}
+
 .history-report-controls {
   display: inline-flex;
   align-items: center;
