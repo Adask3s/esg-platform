@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseUserFromToken } from "../../../frontend/src/lib/authToken.js";
+import { apiErrorMessage } from "../../../frontend/src/lib/apiErrors.js";
 import {
   filenameFromDisposition,
   formatIndicator,
@@ -58,4 +59,13 @@ test("filenameFromDisposition handles UTF-8, ASCII and missing headers", () => {
     filenameFromDisposition("attachment; filename*=UTF-8''raport_%C5%9Brodowisko.pdf"),
     "raport_środowisko.pdf",
   );
+});
+
+test("apiErrorMessage renders generic rate limit copy", () => {
+  assert.equal(
+    apiErrorMessage(429, { detail: "backend-specific" }, "fallback"),
+    "Zbyt wiele prób. Odczekaj chwilę i spróbuj ponownie.",
+  );
+  assert.equal(apiErrorMessage(400, { detail: "Bad request" }, "fallback"), "Bad request");
+  assert.equal(apiErrorMessage(500, null, "fallback"), "fallback");
 });

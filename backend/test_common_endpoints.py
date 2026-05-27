@@ -9,6 +9,7 @@ import pytest
 
 import backend.auth as auth_mod
 import backend.main as main
+from backend import rate_limiting
 
 # Import modułów routerów (nie obiektów APIRouter) do monkeypatchy funkcji.
 docs_router = importlib.import_module("backend.documents_getter_endpoints.router")
@@ -24,7 +25,10 @@ def client():
 def clear_overrides_and_client(monkeypatch):
     main.app.dependency_overrides.clear()
     monkeypatch.setattr(main, "client", None, raising=False)
+    monkeypatch.setattr(rate_limiting, "_get_redis_client", lambda: None)
+    rate_limiting.reset_rate_limit_state()
     yield
+    rate_limiting.reset_rate_limit_state()
     main.app.dependency_overrides.clear()
 
 
@@ -731,6 +735,80 @@ def test_user_documents_delete_success(client, monkeypatch):
     response = client.post("/user/documents/delete", json={"document_id": "doc-1"})
     assert response.status_code == 200
     assert response.json()["status"] == "success"
+
+
+def test_user_documents_finalize_requires_auth(client):
+    response = client.post("/user/documents/finalize", json={"confirm_delete": True})
+
+    assert response.status_code == 401
+
+
+def test_user_documents_finalize_requires_confirmation(client):
+    set_auth_user({"id": "u1", "role": "user"})
+
+    response = client.post("/user/documents/finalize", json={"confirm_delete": False})
+
+    assert response.status_code == 400
+
+
+def test_user_documents_finalize_deletes_sources_and_clears_report_evidence(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    calls = {}
+
+    def fake_delete_all_user_documents_cascade(user_id):
+        calls["delete_user_id"] = user_id
+        return {
+            "document_ids": ["doc-1", "doc-2"],
+            "deleted_documents": 2,
+            "deleted_chunks": 7,
+        }
+
+    def fake_clear_report_evidence_for_user(user_id):
+        calls["clear_user_id"] = user_id
+        return 3
+
+    monkeypatch.setattr(main, "delete_all_user_documents_cascade", fake_delete_all_user_documents_cascade)
+    monkeypatch.setattr(main.report_repo, "clear_report_evidence_for_user", fake_clear_report_evidence_for_user)
+
+    response = client.post("/user/documents/finalize", json={"confirm_delete": True})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "deleted_documents": 2,
+        "deleted_chunks": 7,
+        "cleared_report_evidence": 3,
+        "document_ids": ["doc-1", "doc-2"],
+    }
+    assert calls == {"delete_user_id": "u1", "clear_user_id": "u1"}
+
+
+def test_auth_login_rate_limit_returns_429(client, monkeypatch):
+    monkeypatch.setattr(auth_mod, "get_user_by_username", lambda _username: None)
+
+    for _ in range(5):
+        response = client.post("/auth/login", data={"username": "alice", "password": "bad"})
+        assert response.status_code == 401
+
+    response = client.post("/auth/login", data={"username": "alice", "password": "bad"})
+
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After")
+
+
+def test_report_generate_rate_limit_returns_429(client, monkeypatch):
+    set_auth_user({"id": "u1", "role": "user"})
+    monkeypatch.setattr(main.generate_report_task, "delay", lambda *args, **kwargs: SimpleNamespace(id="rep-1"))
+    monkeypatch.setattr(main, "_register_task_owner", lambda *args, **kwargs: None)
+
+    for _ in range(10):
+        response = client.post("/report/generate", json={"report_scope": "Environmental"})
+        assert response.status_code == 200
+
+    response = client.post("/report/generate", json={"report_scope": "Environmental"})
+
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After")
 
 
 # -------------------------

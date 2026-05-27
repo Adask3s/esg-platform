@@ -2,13 +2,18 @@ from datetime import datetime, timedelta
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from pydantic import BaseModel
 from jose import JWTError, jwt
 import bcrypt
 
 from database.user_repo import get_user_by_username, create_user
+
+try:
+    from .rate_limiting import client_identifier, enforce_rate_limit
+except ImportError:
+    from backend.rate_limiting import client_identifier, enforce_rate_limit  # type: ignore
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -73,7 +78,14 @@ class UserCreate(BaseModel):
 
 
 @router.post("/signup")
-def signup(user: UserCreate):
+def signup(user: UserCreate, request: Request):
+    enforce_rate_limit(
+        request=request,
+        scope="auth_signup",
+        identity=client_identifier(request),
+        limit=int(os.getenv("RATE_LIMIT_SIGNUP_PER_HOUR", "3")),
+        window_seconds=3600,
+    )
     if not SIGNUP_ENABLED:
         raise HTTPException(
             status_code=403,
@@ -95,7 +107,14 @@ def signup(user: UserCreate):
 
 
 @router.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    enforce_rate_limit(
+        request=request,
+        scope="auth_login",
+        identity=f"{client_identifier(request)}:{form_data.username}",
+        limit=int(os.getenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5")),
+        window_seconds=60,
+    )
     user = get_user_by_username(form_data.username)
     if not user or not verify_password(form_data.password, user["password_hash"]):
         raise HTTPException(
@@ -113,7 +132,14 @@ class ContactRequest(BaseModel):
 
 
 @router.post("/contact")
-def contact(contact: ContactRequest):
+def contact(contact: ContactRequest, request: Request):
+    enforce_rate_limit(
+        request=request,
+        scope="auth_contact",
+        identity=f"{client_identifier(request)}:{contact.email}",
+        limit=int(os.getenv("RATE_LIMIT_CONTACT_PER_10_MINUTES", "3")),
+        window_seconds=600,
+    )
     """
     Simple contact form endpoint
     In production, this should send an email or save to database

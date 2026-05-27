@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../App.css";
 import MultiFileUpload from "../components/MultiFileUpload";
+import { apiErrorMessage } from "../lib/apiErrors";
 import { REPORT_SCOPES, REPORT_STANDARDS, scopeFromTag } from "../lib/reportUtils";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -15,6 +16,8 @@ export default function Dashboard({ user, onLogout }) {
   const [refreshingReports, setRefreshingReports] = useState(false);
   const [documentsError, setDocumentsError] = useState("");
   const [reportsError, setReportsError] = useState("");
+  const [finalizeStatus, setFinalizeStatus] = useState("");
+  const [finalizingSources, setFinalizingSources] = useState(false);
   const [selectedReportScope, setSelectedReportScope] = useState("ESG");
   const [selectedReportStandard, setSelectedReportStandard] = useState("GRI");
   const hasLoadedDocuments = useRef(false);
@@ -39,7 +42,7 @@ export default function Dashboard({ user, onLogout }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.detail || "Failed to load documents");
+        throw new Error(apiErrorMessage(res.status, data, "Failed to load documents"));
       }
       let docs = Array.isArray(data) ? data : data?.documents || [];
       docs = docs.filter((doc) => doc.origin === "user" || !doc.origin);
@@ -75,7 +78,7 @@ export default function Dashboard({ user, onLogout }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.detail || "Failed to load report history");
+        throw new Error(apiErrorMessage(res.status, data, "Failed to load report history"));
       }
       const reports = Array.isArray(data) ? data : data?.reports || [];
       setReportHistory(reports);
@@ -111,12 +114,54 @@ export default function Dashboard({ user, onLogout }) {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.detail || "Failed to delete document.");
+        throw new Error(apiErrorMessage(response.status, data, "Failed to delete document."));
       }
 
       await refreshUserDocuments();
     } catch (err) {
       console.error("Delete error:", err);
+      setDocumentsError(err.message || "Failed to delete document.");
+    }
+  };
+
+  const finalizeAndDeleteSources = async () => {
+    if (!userDocuments.length || finalizingSources) return;
+    const confirmed = window.confirm(
+      "This will permanently delete all uploaded source documents, chunks and report evidence excerpts. Saved report JSON will remain. Continue?"
+    );
+    if (!confirmed) return;
+
+    setFinalizeStatus("");
+    setDocumentsError("");
+    setFinalizingSources(true);
+
+    try {
+      const response = await fetch(`${API_URL}/user/documents/finalize`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.token}`,
+        },
+        body: JSON.stringify({ confirm_delete: true }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(response.status, data, "Failed to finalize source deletion."));
+      }
+
+      setUserDocuments([]);
+      setFinalizeStatus(
+        `Deleted ${data.deleted_documents ?? 0} source documents and cleared evidence in ${data.cleared_report_evidence ?? 0} reports.`
+      );
+      await Promise.all([
+        refreshUserDocuments({ keepTableVisible: true }),
+        refreshReportHistory({ keepTableVisible: true }),
+      ]);
+    } catch (err) {
+      console.error("Finalize source deletion error:", err);
+      setDocumentsError(err.message || "Failed to finalize source deletion.");
+    } finally {
+      setFinalizingSources(false);
     }
   };
 
@@ -137,9 +182,9 @@ export default function Dashboard({ user, onLogout }) {
         },
       });
 
-      const data = await response.json();
+      const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data?.detail || "Failed to delete report.");
+        throw new Error(apiErrorMessage(response.status, data, "Failed to delete report."));
       }
 
       await refreshReportHistory({ keepTableVisible: true });
@@ -177,6 +222,7 @@ export default function Dashboard({ user, onLogout }) {
             <>
               {user?.role === "admin" ? <a href="/admin">Admin Panel</a> : null}
               <a href="/contact">Contact us</a>
+              <a href="/privacy">Privacy</a>
               <button
                 onClick={onLogout}
                 style={{
@@ -193,6 +239,7 @@ export default function Dashboard({ user, onLogout }) {
           ) : (
             <>
               <a href="/contact">Contact us</a>
+              <a href="/privacy">Privacy</a>
               <a href="/login">Login</a>
               <a href="/signup">Sign up</a>
             </>
@@ -276,8 +323,17 @@ export default function Dashboard({ user, onLogout }) {
               >
                 Generate Report
               </button>
+              <button
+                type="button"
+                className="table-btn danger history-finalize-btn"
+                onClick={finalizeAndDeleteSources}
+                disabled={!userDocuments.length || finalizingSources}
+              >
+                {finalizingSources ? "Finalizing..." : "Finalize and delete sources"}
+              </button>
             </div>
           </div>
+          {finalizeStatus ? <div className="history-success-message">{finalizeStatus}</div> : null}
           {refreshingDocuments ? (
             <div className="history-refreshing">Refreshing documents...</div>
           ) : null}

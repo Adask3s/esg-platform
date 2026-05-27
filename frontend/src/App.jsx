@@ -8,6 +8,7 @@ import SignUp from "./pages/SignUp";
 import ContactUs from "./pages/ContactUs";
 import ResetPassword from "./pages/ResetPassword";
 import AdminPanel from "./pages/AdminPanel";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 import { parseUserFromToken } from "./lib/authToken";
 
 function App() {
@@ -38,6 +39,7 @@ function App() {
       <Route path="/signup" element={<SignUp onLogin={handleLogin} />} />
       <Route path="/contact" element={<ContactUs />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
     </Routes>
   );
 }
